@@ -2,7 +2,7 @@
 
 ## Threat model, honestly stated
 
-`local-loop` drives a desktop with a language model. Understand what that means before running it:
+`desktop-use` drives a desktop with a language model. Understand what that means before running it:
 
 - **The agent executes real input events.** Everything it does inside the nested display is real: real clicks, real keystrokes, real shell commands if it opens a terminal. The nested Xephyr display isolates the *screen and input*, not the *filesystem or network*: a terminal inside the session is a terminal on your machine, running as your user.
 - **Prompt injection is a live risk.** If the agent browses the web, page content becomes model input. A malicious page can try to steer the agent. Keep tasks scoped, keep `--max-steps` low, and watch runs you do not trust.

@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>local-loop session</title>
+<title>desktop-use session</title>
 <script>
   // apply the stored theme before first paint to avoid a flash
-  const stored = localStorage.getItem('ll-theme');
+  const stored = localStorage.getItem('du-theme');
   if (stored) document.documentElement.dataset.theme = stored;
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -428,7 +428,7 @@
 
 <header>
   <a class="back" href="/">‹ SESSIONS</a>
-  <div class="wordmark"><span class="lamp" id="lamp"></span>LOCAL·LOOP</div>
+  <div class="wordmark"><span class="lamp" id="lamp"></span>DESKTOP·USE</div>
   <div class="gauges">
     <div class="gauge"><span class="k" id="g-step-k">STEP</span>
       <span class="v" id="g-step">–<span class="dim">/–</span></span></div>
@@ -946,7 +946,7 @@ function paintThemeBtn() {
 $('theme-btn').addEventListener('click', () => {
   const next = effTheme() === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
-  localStorage.setItem('ll-theme', next);
+  localStorage.setItem('du-theme', next);
   paintThemeBtn();
 });
 matchMedia('(prefers-color-scheme: light)')

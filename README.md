@@ -1,13 +1,13 @@
-# local-loop
+# desktop-use
 
 **A self-hosted computer-use agent with a mission-control web console. One desktop, one loop, zero cloud runtime.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-1b232d.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-1b232d.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.0.1-ffb454.svg)](https://github.com/arthurkatcher/local-loop/releases)
+[![Version](https://img.shields.io/badge/version-0.0.1-ffb454.svg)](https://github.com/arthurkatcher/desktop-use/releases)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-63b981.svg)](CONTRIBUTING.md)
 
-`local-loop` re-implements the classic vision-agent runtime loop (screenshot, vision-language model, synthetic input) as two small readable Python files, and wraps it in a real-time operator console: live VNC view of the agent's desktop, streaming reasoning transcript, per-step snapshot replay, and three ways to intervene mid-flight without killing the run.
+`desktop-use` re-implements the classic vision-agent runtime loop (screenshot, vision-language model, synthetic input) as two small readable Python files, and wraps it in a real-time operator console: live VNC view of the agent's desktop, streaming reasoning transcript, per-step snapshot replay, and three ways to intervene mid-flight without killing the run.
 
 It talks to **any OpenAI-compatible vision model endpoint**: OpenRouter, Ollama, vLLM, llama.cpp, LM Studio. No vendor runtime, no closed binaries, no telemetry.
 
@@ -42,7 +42,7 @@ It talks to **any OpenAI-compatible vision model endpoint**: OpenRouter, Ollama,
 
 ## Why
 
-Cloud computer-use agents are black boxes: closed runtimes, opaque loops, screenshots you never see again. `local-loop` is the opposite. The whole agent brain is ~400 lines you can read in one sitting, every step of every run is persisted to plain files on your disk, and the model behind it is whatever endpoint you point it at. It exists to make the loop itself inspectable, hackable and debuggable.
+Cloud computer-use agents are black boxes: closed runtimes, opaque loops, screenshots you never see again. `desktop-use` is the opposite. The whole agent brain is ~400 lines you can read in one sitting, every step of every run is persisted to plain files on your disk, and the model behind it is whatever endpoint you point it at. It exists to make the loop itself inspectable, hackable and debuggable.
 
 ## Features
 
@@ -90,8 +90,8 @@ Replays are reconstructed entirely from these files, so history survives server 
 ## Quickstart
 
 ```bash
-git clone https://github.com/arthurkatcher/local-loop.git
-cd local-loop
+git clone https://github.com/arthurkatcher/desktop-use.git
+cd desktop-use
 
 # console with OpenRouter (recommended model: claude-haiku-4.5)
 OPENAI_API_KEY=sk-or-... uv run ui.py \

@@ -5,7 +5,7 @@
 #     "python-xlib>=0.33",
 # ]
 # ///
-"""Browser console for local-loop: sessions, live VM view, streaming dialogue.
+"""Browser console for desktop-use: sessions, live VM view, streaming dialogue.
 
 Serves a home page listing every session (persisted under sessions/) with a
 prompt to launch a new one, and a per-session console at /s/<id> where the

@@ -1,12 +1,12 @@
-# Contributing to local-loop
+# Contributing to desktop-use
 
 Thanks for considering a contribution. The project optimizes for one thing above all: **the whole loop stays readable in one sitting**. Two files, plain Python, no framework.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/<you>/local-loop.git
-cd local-loop
+git clone https://github.com/<you>/desktop-use.git
+cd desktop-use
 # nothing to install: uv resolves script dependencies from the file headers
 uv run agent.py --probe        # verifies the capture + input pipeline end to end
 ```

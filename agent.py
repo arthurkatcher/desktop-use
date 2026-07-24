@@ -353,7 +353,7 @@ class ManagedEnv:
 def probe(desk: Desktop):
     print(f"display {desk.name}: {desk.width}x{desk.height}")
     png = desk.screenshot_png()
-    out = os.path.join(tempfile.gettempdir(), "local-loop-probe.png")
+    out = os.path.join(tempfile.gettempdir(), "desktop-use-probe.png")
     with open(out, "wb") as f:
         f.write(png)
     print(f"screenshot ok ({len(png)} bytes) -> {out}")
@@ -438,7 +438,7 @@ def run(args):
             if action.get("type") == "done":
                 status = "success" if action.get("success") else "FAILED"
                 final = os.path.join(tempfile.gettempdir(),
-                                     "local-loop-final.png")
+                                     "desktop-use-final.png")
                 with open(final, "wb") as f:
                     f.write(desk.screenshot_png())
                 print(f"done ({status}): {action.get('summary', '')}")
