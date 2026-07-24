@@ -14,3 +14,8 @@ First public release.
   SSE transcript with reconnect dedupe, step-boundary interrupt contract shared
   by stop, take-control (pause / resume-or-stop with context note) and
   mid-flight user messages, light/dark theming.
+
+## Unreleased
+
+- Preflight check for required system binaries with an exact install hint,
+  instead of failing mid-environment-spawn.

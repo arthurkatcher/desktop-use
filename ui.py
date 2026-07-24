@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from agent import Desktop, ManagedEnv, ask_model, execute
+from agent import Desktop, ManagedEnv, ask_model, execute, require_binaries
 
 NOVNC_DIR = "/usr/share/novnc"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -532,6 +532,8 @@ def main():
     parser.add_argument("--ws-port", type=int, default=6080)
     cfg = parser.parse_args()
 
+    require_binaries(["Xephyr", "openbox", "scrot", "xterm",
+                      "x11vnc", "websockify"])
     if not os.path.isdir(NOVNC_DIR):
         sys.exit(f"noVNC not found at {NOVNC_DIR} (apt install novnc)")
 

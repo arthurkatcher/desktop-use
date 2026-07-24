@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,23 @@ confirms the goal state (e.g. the requested output is readable on screen).
 A mostly black or empty screen means nothing is open yet - typing would go
 nowhere. Never assume an action worked without seeing the result.
 """
+
+# binary -> Debian/Ubuntu package, for the preflight error message
+APT_PACKAGES = {
+    "Xephyr": "xserver-xephyr", "openbox": "openbox", "scrot": "scrot",
+    "xterm": "xterm", "x11vnc": "x11vnc", "websockify": "websockify",
+}
+
+
+def require_binaries(names: list[str]) -> None:
+    """Fail fast with an install hint instead of dying mid-spawn."""
+    missing = [n for n in names if shutil.which(n) is None]
+    if missing:
+        sys.exit(
+            "missing required system binaries: " + ", ".join(missing)
+            + "\ninstall on Debian/Ubuntu:  sudo apt install "
+            + " ".join(APT_PACKAGES.get(n, n) for n in missing))
+
 
 KEYSYM_ALIASES = {
     "enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape",
@@ -391,6 +409,8 @@ def main():
     if not args.probe and not args.task:
         parser.error("a task is required unless --probe is given")
 
+    require_binaries(["scrot"] if args.display is not None
+                     else ["Xephyr", "openbox", "scrot", "xterm"])
     if args.display is None:
         with ManagedEnv() as display:
             run(argparse.Namespace(**{**vars(args), "display": display}))
