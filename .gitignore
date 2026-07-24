@@ -11,3 +11,6 @@ __pycache__/
 .vscode/
 *.swp
 .DS_Store
+
+# local machine notes, never commit
+*.local.md
