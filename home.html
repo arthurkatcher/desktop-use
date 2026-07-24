@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>local-loop sessions</title>
+<script>
+  // apply the stored theme before first paint to avoid a flash
+  const stored = localStorage.getItem('ll-theme');
+  if (stored) document.documentElement.dataset.theme = stored;
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --tube: #0E1216;
+    --chassis: #151B22;
+    --chassis-2: #1B232D;
+    --chassis-3: #212B36;
+    --line: #27313C;
+    --line-soft: rgba(39, 49, 60, .45);
+    --paper: #E9E4D8;
+    --muted: #8A94A1;
+    --faint: #5A6470;
+    --amber: #FFB454;
+    --amber-deep: #C67F2A;
+    --amber-glow: rgba(255, 180, 84, .16);
+    --ok: #63B981;
+    --bad: #E56470;
+    --amber-hover: #FFC475;
+    --on-amber: #0E1216;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
+  }
+  :root[data-theme="light"] {
+    --tube: #EFEAE0; --chassis: #F7F4EC; --chassis-2: #ECE7DB;
+    --chassis-3: #E0DACB; --line: #D3CCBC;
+    --line-soft: rgba(120, 112, 96, .25);
+    --paper: #232A32; --muted: #5F6873; --faint: #98A0AA;
+    --amber: #B8721F; --amber-deep: #9A5E14; --amber-hover: #A5661B;
+    --amber-glow: rgba(184, 114, 31, .18);
+    --on-amber: #FFF8EC; --ok: #23784A; --bad: #B93A46;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --tube: #EFEAE0; --chassis: #F7F4EC; --chassis-2: #ECE7DB;
+      --chassis-3: #E0DACB; --line: #D3CCBC;
+      --line-soft: rgba(120, 112, 96, .25);
+      --paper: #232A32; --muted: #5F6873; --faint: #98A0AA;
+      --amber: #B8721F; --amber-deep: #9A5E14; --amber-hover: #A5661B;
+      --amber-glow: rgba(184, 114, 31, .18);
+      --on-amber: #FFF8EC; --ok: #23784A; --bad: #B93A46;
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--tube); color: var(--paper); font-family: var(--sans);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  ::selection { background: var(--amber-deep); color: var(--on-amber); }
+
+  header {
+    display: flex; align-items: center; gap: 28px;
+    padding: 0 20px; height: 54px; flex: none;
+    border-bottom: 1px solid var(--line); background: var(--chassis);
+    font-family: var(--mono); font-size: 12px;
+  }
+  .wordmark { display: flex; align-items: center; gap: 10px;
+              font-weight: 600; letter-spacing: .18em; font-size: 13px; }
+  .lamp { width: 9px; height: 9px; border-radius: 50%;
+          background: var(--muted); flex: none; }
+  .lamp.thinking { background: var(--amber);
+                   animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: .3; } }
+  .head-meta { margin-left: auto; display: flex; gap: 24px;
+               color: var(--muted); font-size: 11px; letter-spacing: .1em; }
+  #theme-btn {
+    width: 32px; height: 32px; border-radius: 6px; flex: none;
+    font-size: 14px; line-height: 1;
+    background: none; border: 1px solid var(--line); color: var(--muted);
+    cursor: pointer; transition: border-color .15s, color .15s;
+  }
+  #theme-btn:hover { border-color: var(--amber-deep); color: var(--paper); }
+  #theme-btn:focus-visible { outline: 2px solid var(--paper);
+                             outline-offset: 2px; }
+
+  .wrap { flex: 1; overflow-y: auto;
+          scrollbar-width: thin;
+          scrollbar-color: var(--chassis-3) transparent; }
+  .wrap::-webkit-scrollbar { width: 8px; }
+  .wrap::-webkit-scrollbar-thumb { background: var(--chassis-3);
+                                   border-radius: 4px; }
+  .inner { max-width: 780px; margin: 0 auto; padding: 44px 24px 80px; }
+
+  .eyebrow { font-family: var(--mono); font-size: 9px; letter-spacing: .22em;
+             color: var(--muted); margin-bottom: 10px; }
+
+  /* ── launcher ───────────────────────────────────── */
+  .launcher {
+    background: var(--chassis);
+    border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; margin-bottom: 42px;
+  }
+  .prompt-box { position: relative; }
+  .prompt-box::before {
+    content: "❯"; position: absolute; left: 14px; top: 12px;
+    font-family: var(--mono); font-size: 13px; color: var(--amber-deep);
+    pointer-events: none;
+  }
+  textarea {
+    width: 100%; min-height: 76px; resize: vertical; display: block;
+    background: var(--tube); color: var(--paper);
+    border: 1px solid var(--line); border-radius: 8px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.55;
+    padding: 11px 14px 11px 32px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  textarea::placeholder { color: var(--faint); }
+  textarea:focus {
+    outline: none; border-color: var(--amber-deep);
+    box-shadow: 0 0 0 1px var(--amber-deep);
+  }
+  .launch-row { display: flex; align-items: center; gap: 12px;
+                margin-top: 13px; }
+  #launch-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-weight: 600; font-size: 12.5px;
+    letter-spacing: .08em; padding: 11px 20px;
+    background: var(--amber); color: var(--on-amber);
+    border: none; border-radius: 7px; cursor: pointer;
+    transition: background .15s;
+  }
+  #launch-btn:hover:not(:disabled) { background: var(--amber-hover); }
+  #launch-btn:disabled { background: var(--chassis-3); color: var(--muted);
+                         cursor: default; }
+  #launch-btn:focus-visible { outline: 2px solid var(--paper);
+                              outline-offset: 2px; }
+  .hint { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .hint a { color: var(--amber); text-decoration: none; }
+  .kbd {
+    font-family: var(--mono); font-size: 9.5px; color: var(--faint);
+    border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; padding: 2px 6px; margin-left: auto;
+  }
+
+  /* ── session rows ───────────────────────────────── */
+  .sessions-head { display: flex; align-items: baseline; gap: 12px; }
+  .sessions-head .count { font-family: var(--mono); font-size: 10px;
+                          color: var(--faint); }
+  .row {
+    display: flex; align-items: center; gap: 16px;
+    padding: 13px 16px; margin-bottom: 10px;
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--chassis-2) 88%, transparent),
+      color-mix(in srgb, var(--chassis-2) 62%, transparent));
+    border: 1px solid var(--line-soft); border-radius: 10px;
+    cursor: pointer; text-decoration: none; color: inherit;
+    transition: border-color .15s, transform .12s;
+    animation: rise .28s ease both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
+  .row:hover { border-color: var(--line); transform: translateX(3px); }
+  .row.active { border-color: var(--amber-deep); }
+  .thumb {
+    width: 84px; height: 52px; flex: none; border-radius: 5px;
+    background: #000 center/cover; border: 1px solid var(--line);
+  }
+  .thumb.blank { display: flex; align-items: center; justify-content: center;
+                 color: var(--faint); font-family: var(--mono);
+                 font-size: 9px; letter-spacing: .1em; }
+  .row-main { flex: 1; min-width: 0; }
+  .row-task {
+    font-size: 13.5px; line-height: 1.45; font-weight: 500;
+    display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .row-sub { display: flex; gap: 14px; margin-top: 6px;
+             font-family: var(--mono); font-size: 10.5px;
+             color: var(--faint); letter-spacing: .06em;
+             white-space: nowrap; }
+  .badge {
+    flex: none; font-family: var(--mono); font-size: 9.5px;
+    letter-spacing: .14em; padding: 4px 9px; border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+  .badge.running  { color: var(--amber); border-color: var(--amber-deep);
+                    animation: breathe 1.6s ease-in-out infinite; }
+  .badge.complete { color: var(--ok); border-color:
+                    color-mix(in srgb, var(--ok) 50%, var(--line)); }
+  .badge.stopped, .badge.incomplete, .badge.error {
+    color: var(--bad); border-color:
+    color-mix(in srgb, var(--bad) 45%, var(--line)); }
+
+  .empty {
+    padding: 30px 22px; border: 1px dashed var(--line); border-radius: 10px;
+    color: var(--muted); font-size: 12.5px; line-height: 1.65;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lamp.thinking, .badge.running, .row { animation: none; }
+    .row, #launch-btn { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark"><span class="lamp" id="lamp"></span>LOCAL·LOOP</div>
+  <div class="head-meta"><span id="head-state">SESSIONS</span></div>
+  <button id="theme-btn" title="Toggle light/dark theme">◐</button>
+</header>
+
+<div class="wrap"><div class="inner">
+
+  <div class="eyebrow">NEW SESSION</div>
+  <div class="launcher">
+    <div class="prompt-box">
+      <textarea id="task" spellcheck="false"
+        placeholder="Describe what the agent should do on the desktop…"></textarea>
+    </div>
+    <div class="launch-row">
+      <button id="launch-btn">LAUNCH SESSION</button>
+      <span class="hint" id="hint"></span>
+      <span class="kbd">⌃ ↵</span>
+    </div>
+  </div>
+
+  <div class="sessions-head">
+    <div class="eyebrow">SESSIONS</div>
+    <span class="count" id="count"></span>
+  </div>
+  <div id="list"></div>
+
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function ago(ts) {
+  const s = Math.floor(Date.now() / 1000 - ts);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return new Date(ts * 1000).toLocaleDateString();
+}
+function dur(m) {
+  if (!m.ended) return '…';
+  const s = Math.round(m.ended - m.started);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+let anyRunning = false;
+let lastPayload = '';
+let firstRender = true;
+
+async function load() {
+  const rows = await (await fetch('/sessions')).json();
+  // re-render only when something changed - otherwise the 5s poll would
+  // rebuild the list, replay animations, and refetch every thumbnail
+  const payload = JSON.stringify(rows);
+  if (payload === lastPayload) return;
+  lastPayload = payload;
+  anyRunning = rows.some(r => r.active);
+  $('lamp').className = 'lamp' + (anyRunning ? ' thinking' : '');
+  $('head-state').textContent = anyRunning ? 'SESSION RUNNING' : 'IDLE';
+  $('count').textContent = rows.length ? `${rows.length} total` : '';
+  $('launch-btn').disabled = anyRunning;
+  $('hint').innerHTML = anyRunning
+    ? 'one session at a time — <a href="/s/' +
+      esc(rows.find(r => r.active).id) + '">watch the running one</a>'
+    : '';
+
+  if (!rows.length) {
+    $('list').innerHTML = '<div class="empty">No sessions yet. ' +
+      'Describe a task above and launch the first one — the agent drives ' +
+      'a private desktop and every step is recorded here.</div>';
+    return;
+  }
+  const anim = firstRender;
+  firstRender = false;
+  $('list').innerHTML = rows.map((m, i) => {
+    const status = m.active ? 'running' : m.status;
+    const shot = m.steps > 0
+      ? `style="background-image:url('/shot/${esc(m.id)}/${
+          m.status === 'running' ? m.steps : 'final'}.png')"` : '';
+    const thumb = m.steps > 0
+      ? `<span class="thumb" ${shot}></span>`
+      : `<span class="thumb blank">NO IMG</span>`;
+    return `<a class="row${m.active ? ' active' : ''}" href="/s/${esc(m.id)}"
+              style="${anim
+                ? `animation-delay:${Math.min(i * 40, 400)}ms`
+                : 'animation:none'}">
+      ${thumb}
+      <span class="row-main">
+        <span class="row-task">${esc(m.task)}</span>
+        <span class="row-sub">
+          <span>${esc(m.model.split('/').pop())}</span>
+          <span>${m.steps} steps</span>
+          <span>${dur(m)}</span>
+          <span>${ago(m.started)}</span>
+        </span>
+      </span>
+      <span class="badge ${esc(status)}">${esc(status).toUpperCase()}</span>
+    </a>`;
+  }).join('');
+}
+
+async function launch() {
+  const task = $('task').value.trim();
+  if (!task) { $('task').focus(); return; }
+  $('launch-btn').disabled = true;
+  const res = await fetch('/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task }),
+  });
+  const data = await res.json();
+  if (res.ok) location.href = '/s/' + data.id;
+  else { $('hint').textContent = data.error; $('launch-btn').disabled = false; }
+}
+$('launch-btn').addEventListener('click', launch);
+$('task').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) launch();
+});
+
+load();
+setInterval(load, 5000);
+
+/* ── theme ───────────────────────────────────────── */
+const effTheme = () => document.documentElement.dataset.theme
+  || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+function paintThemeBtn() {
+  $('theme-btn').textContent = effTheme() === 'dark' ? '☀' : '☾';
+}
+$('theme-btn').addEventListener('click', () => {
+  const next = effTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('ll-theme', next);
+  paintThemeBtn();
+});
+matchMedia('(prefers-color-scheme: light)')
+  .addEventListener('change', paintThemeBtn);
+paintThemeBtn();
+</script>
+</body>
+</html>

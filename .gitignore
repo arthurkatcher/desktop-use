@@ -1,0 +1,13 @@
+# session recordings: screenshots + event logs of the local machine
+sessions/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# editors / os
+.idea/
+.vscode/
+*.swp
+.DS_Store
