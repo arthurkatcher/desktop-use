@@ -82,10 +82,24 @@ Replays are reconstructed entirely from these files, so history survives server 
 
 ## Requirements
 
-- Linux with X11 tooling: `Xephyr`, `openbox`, `scrot`, `xterm` (Wayland hosts are fine, the agent runs in a nested X server)
-- `x11vnc`, `novnc`, `websockify` for the live console view (`apt install x11vnc novnc websockify`)
-- [`uv`](https://docs.astral.sh/uv/) (Python 3.12+; script dependencies resolve automatically from the file headers)
-- A vision-capable model endpoint (see [Model backends](#model-backends))
+Python-side there is nothing to install: [`uv`](https://docs.astral.sh/uv/) resolves the two script dependencies (`httpx`, `python-xlib`) automatically from the file headers on first run. The code also spawns and tears down the whole desktop environment (Xephyr, openbox, x11vnc, websockify) by itself. You only need the system binaries present:
+
+```bash
+# Debian / Ubuntu (tested)
+sudo apt install xserver-xephyr openbox scrot xterm x11vnc novnc websockify
+
+# uv, if you do not have it yet
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Approximate package names elsewhere (untested): Fedora `xorg-x11-server-Xephyr openbox scrot xterm x11vnc novnc python3-websockify`, Arch `xorg-server-xephyr openbox scrot xterm x11vnc novnc python-websockify`.
+
+Notes:
+
+- Wayland hosts are fine: the agent runs in a nested X server, and the code scrubs the Wayland environment so nothing escapes to your real desktop.
+- `xterm` and the browser are what the agent actually drives; the bundled openbox menu expects a terminal to exist.
+- The headless CLI (`agent.py`) needs only `xserver-xephyr openbox scrot xterm`; the VNC trio is for the console's live view.
+- A vision-capable model endpoint is required (see [Model backends](#model-backends)).
 
 ## Quickstart
 
