@@ -79,6 +79,7 @@ Cloud computer-use products hide the loop: closed runtimes, opaque decisions, sc
 - **Corrective retries**: malformed or wrong-shape replies are fed back with the parse error (blind retries at temperature 0 reproduce the same mistake).
 - **Anti-loop guards**: fuzzy coordinate repeat detection; screen-changed feedback after each action.
 - **Interrupt contract**: stop, take-control, and mid-flight messages all discard an in-flight model decision at the step boundary (`skipped` / not executed), never half-applied.
+- **Idle after done**: when the agent emits `done`, the session parks as `idle` instead of tearing down. A message resumes the loop; the session ends on **End** (status `complete`), **Stop** (status `stopped`), hard **error**, or **idle timeout** (default 60s / 1 min since last action or user message). Hitting `--max-steps` also parks idle (send a message for another burst).
 
 ### Operator console (`ui.py` + `home.html` + `ui.html`)
 
@@ -86,7 +87,7 @@ Cloud computer-use products hide the loop: closed runtimes, opaque decisions, sc
 - Live noVNC of the agent desktop (local stack or remote `--stream-url`).
 - Snapshot timeline: one PNG per step with scrubber and keyboard navigation.
 - Streaming transcript over SSE with reconnect dedupe on monotonic `seq`.
-- Stop, take control / release, mid-flight messages; light and dark themes.
+- Stop, take control / release, mid-flight and post-done messages (message bar stays while idle); light and dark themes.
 
 ### Remote sandbox (`remote.py`)
 
@@ -271,12 +272,12 @@ Binds **127.0.0.1** only. There is **no console login**. This is a single-operat
 | Control | Where | What it does |
 |---|---|---|
 | LAUNCH SESSION | home | starts a run and opens its session page |
-| STOP | session header | halts at the next step boundary; pending action never runs |
+| STOP | session header | ends the session at the next step/idle boundary; pending action never runs |
 | LIVE / SNAPSHOTS | control deck | real-time canvas vs step replay |
 | ‹ › and arrow keys | control deck | step through snapshots |
 | TAKE CONTROL | control deck | pause the agent; drive the desktop yourself |
 | RELEASE CONTROL | control deck | continue the task, or stop the session |
-| message bar | under transcript | mid-flight instruction into agent context |
+| message bar | under transcript | mid-flight instruction, or new objective while idle |
 | ◐ | header | light/dark theme |
 
 One session runs at a time on a given console process. Non-active sessions open in snapshot replay with LIVE and TAKE CONTROL disabled.
@@ -289,7 +290,8 @@ One session runs at a time on a given console process. Non-active sessions open 
 | `--model` | `LOCAL_LOOP_MODEL` | Model id |
 | `--api-key` | `OPENAI_API_KEY` or `HAI_API_KEY` | Bearer token for the model host (prefer env) |
 | `--model-backend` | `MODEL_BACKEND` / `DESKTOP_USE_MODEL_BACKEND` | `auto` \| `generic` \| `holo` |
-| `--max-steps` | | Cap agent steps (default 15) |
+| `--max-steps` | | Cap agent steps per active burst (default 15); then idle, not end |
+| `--idle-timeout` | `IDLE_TIMEOUT` | Seconds since last action/message before ending an idle session (default `60` = 1 min) |
 | `--sandbox-url` | `SANDBOX_URL` / `DESKTOP_SANDBOX_URL` | Desktop API base |
 | `--stream-url` | `STREAM_URL` / `DESKTOP_STREAM_URL` | Full websocket URL for noVNC |
 | `--sandbox-token` | `SANDBOX_TOKEN` / `DESKTOP_SANDBOX_TOKEN` | Sandbox auth headers |
@@ -374,7 +376,8 @@ Data-plane changes belong in [desktop-sandbox](https://github.com/arthurkatcher/
 | GET | `/s/<id>` | session console |
 | GET | `/sessions` | JSON list of all sessions |
 | POST | `/run` `{"task": "..."}` | launch a session (409 if one is running) |
-| POST | `/stop` | request stop at the next boundary |
+| POST | `/stop` | abort at the next step boundary (`status=stopped`) |
+| POST | `/end` | clean close at the next step boundary (`status=complete`) |
 | POST | `/message` `{"text": "..."}` | queue a mid-flight instruction |
 | POST | `/control/take` | pause the agent; user takes the desktop |
 | POST | `/control/release` `{"continue": bool}` | hand back and resume, or stop |

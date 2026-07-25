@@ -84,6 +84,9 @@
           background: var(--muted); flex: none; }
   .lamp.thinking { background: var(--amber);
                    animation: breathe 1.6s ease-in-out infinite; }
+  /* idle is neutral wait, not error — same amber family as thinking */
+  .lamp.idle { background: var(--amber);
+               box-shadow: 0 0 0 3px var(--amber-glow); }
   .lamp.ok  { background: var(--ok); }
   .lamp.bad { background: var(--bad); }
   @keyframes breathe { 50% { opacity: .3; } }
@@ -92,17 +95,30 @@
   .gauge .k { color: var(--muted); font-size: 9px; letter-spacing: .16em; }
   .gauge .v { font-variant-numeric: tabular-nums; font-size: 13px; }
   .gauge .v .dim { color: var(--muted); }
-  #stop-btn {
+  .session-actions {
+    display: none; align-items: center; gap: 8px;
+  }
+  .session-actions.on { display: flex; }
+  #stop-btn, #end-btn {
     font-family: var(--mono); font-weight: 600; font-size: 11px;
-    letter-spacing: .08em; padding: 8px 14px; display: none;
-    background: none; color: var(--bad); border: 1px solid var(--bad);
-    border-radius: 6px; cursor: pointer; transition: background .15s;
+    letter-spacing: .08em; padding: 8px 14px;
+    background: none; border-radius: 6px; cursor: pointer;
+    transition: background .15s;
+  }
+  #stop-btn {
+    color: var(--bad); border: 1px solid var(--bad);
   }
   #stop-btn:hover:not(:disabled) { background: rgba(229,100,112,.12); }
-  #stop-btn:disabled { color: var(--faint); border-color: var(--line);
-                       cursor: default; }
-  #stop-btn:focus-visible { outline: 2px solid var(--paper);
-                            outline-offset: 2px; }
+  #end-btn {
+    color: var(--ok); border: 1px solid var(--ok);
+  }
+  #end-btn:hover:not(:disabled) { background: rgba(120,190,140,.12); }
+  #stop-btn:disabled, #end-btn:disabled {
+    color: var(--faint); border-color: var(--line); cursor: default;
+  }
+  #stop-btn:focus-visible, #end-btn:focus-visible {
+    outline: 2px solid var(--paper); outline-offset: 2px;
+  }
   #theme-btn {
     width: 32px; height: 32px; border-radius: 6px; flex: none;
     font-size: 14px; line-height: 1;
@@ -242,6 +258,14 @@
       color-mix(in srgb, var(--bad) 3%, var(--chassis-2))); }
   .card.final.done-bad .node { color: var(--bad); border-color: var(--bad); }
   .card.final.done-bad .step-label { color: var(--bad); }
+  /* session closed cleanly (idle timeout) — amber, not success/error */
+  .card.final.session-end { border-color:
+    color-mix(in srgb, var(--amber) 45%, var(--line));
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--amber) 10%, var(--chassis-2)),
+      color-mix(in srgb, var(--amber) 3%, var(--chassis-2))); }
+  .card.final.session-end .node { color: var(--amber); border-color: var(--amber); }
+  .card.final.session-end .step-label { color: var(--amber); }
   .card.final .reasoning { font-weight: 600; font-size: 13.5px; }
   .summary { margin-top: 5px; font-size: 12.5px; color: var(--muted);
              line-height: 1.6; }
@@ -439,7 +463,10 @@
     <div class="gauge"><span class="k">DISPLAY</span>
       <span class="v" id="g-display">–</span></div>
   </div>
-  <button id="stop-btn">STOP</button>
+  <div class="session-actions" id="session-actions">
+    <button id="end-btn" title="End session successfully (status: complete)">END</button>
+    <button id="stop-btn" title="Abort session (status: stopped)">STOP</button>
+  </div>
   <button id="theme-btn" title="Toggle light/dark theme">◐</button>
 </header>
 
@@ -549,11 +576,16 @@ function modal(title, text, buttons) {
 }
 
 /* ── take / release control ──────────────────────── */
-let running = false, controlHeld = false, pausedRun = false;
+// sessionLive: desktop session open (running or idle). agentBusy: model loop.
+let running = false, agentBusy = false, controlHeld = false, pausedRun = false;
+let idleTimeoutS = 60;
+const MSG_PLACEHOLDER_RUN = 'Message the agent mid-task…';
+const MSG_PLACEHOLDER_IDLE = 'Session idle — send a message to continue…';
 
 function grantControl() {
+  if (!running) return;  // never drive desktop after session end
   controlHeld = true;
-  rfb.viewOnly = false;
+  if (rfb) rfb.viewOnly = false;
   $('control-btn').classList.add('on');
   $('control-btn').textContent = 'RELEASE CONTROL';
   setMode('live');
@@ -562,27 +594,41 @@ function grantControl() {
 function revokeControl() {
   controlHeld = false;
   pausedRun = false;
-  rfb.viewOnly = true;
+  if (rfb) rfb.viewOnly = true;
   $('control-btn').classList.remove('on');
   $('control-btn').textContent = 'TAKE CONTROL';
   refreshLabel();
 }
+/** Session finished (stop / error / idle timeout): lock out control + VNC input. */
+function lockControlEnded(why) {
+  running = false;
+  agentBusy = false;
+  pausedRun = false;
+  if (controlHeld) revokeControl();
+  else if (rfb) rfb.viewOnly = true;
+  $('control-btn').disabled = true;
+  $('control-btn').title = why
+    || 'session has ended — take control is only available while a session is live';
+  $('control-btn').classList.remove('on');
+  $('control-btn').textContent = 'TAKE CONTROL';
+}
 
 $('control-btn').addEventListener('click', () => {
+  if (!running || $('control-btn').disabled) return;
   if (!controlHeld) {
-    if (running) {
-      modal('TAKE CONTROL',
-        'Taking control pauses the agent: it will finish deciding its ' +
-        'current step but execute nothing until you hand the desktop back.',
-        [['PAUSE AGENT & TAKE CONTROL', 'primary', async () => {
-           await fetch('/control/take', { method: 'POST' });
-           pausedRun = true;
-           grantControl();
-         }],
-         ['CANCEL', '', null]]);
-    } else {
-      grantControl();
-    }
+    const body = agentBusy
+      ? 'Taking control pauses the agent: it will finish deciding its ' +
+        'current step but execute nothing until you hand the desktop back.'
+      : 'Session is idle. Take the desktop; the agent stays parked until ' +
+        'you release control (and will only act after a new message).';
+    modal('TAKE CONTROL', body,
+      [['PAUSE AGENT & TAKE CONTROL', 'primary', async () => {
+         if (!running) return;
+         await fetch('/control/take', { method: 'POST' });
+         pausedRun = true;
+         grantControl();
+       }],
+       ['CANCEL', '', null]]);
   } else {
     if (pausedRun && running) {
       modal('RELEASE CONTROL',
@@ -751,27 +797,47 @@ function handle(ev) {
       $('feed-sid').textContent = `SESSION ${sid}`;
       maxSteps = ev.max_steps;
       live = ev.live;
+      if (ev.idle_timeout != null) idleTimeoutS = Number(ev.idle_timeout);
       if (!live) {
-        // the live desktop belongs to whichever session is running now
+        // finished session or another session owns the desktop
         $('seg-live').disabled = true;
-        $('control-btn').disabled = true;
+        lockControlEnded(
+          'only the active session can take the desktop');
+      } else if (ev.status === 'idle' || ev.status === 'running') {
+        // reconnect mid-session: keep message bar / stop / control available
+        running = true;
+        agentBusy = ev.status === 'running';
+        $('control-btn').disabled = false;
         $('control-btn').title =
-          'only the active session can take the desktop';
+          'Let your mouse and keyboard reach the desktop';
+        showSessionActions(true);
+        $('msgbar').classList.add('on');
+        $('msg-input').placeholder = agentBusy
+          ? MSG_PLACEHOLDER_RUN : MSG_PLACEHOLDER_IDLE;
+        if (ev.status === 'idle') lamp.className = 'lamp idle';
+      } else {
+        // live connection but status already terminal (race on reconnect)
+        lockControlEnded('session has ended');
       }
       break;
     case 'run_start':
       runStartTs = ev.ts;
       running = true;
+      agentBusy = true;
       lamp.className = 'lamp thinking';
       if (live) {
         clockAnchor = Date.now();
         clearInterval(clockTimer);
         clockTimer = setInterval(tickClock, 500);
-        $('stop-btn').style.display = 'inline-block';
-        $('stop-btn').disabled = false;
+        showSessionActions(true);
+        $('control-btn').disabled = false;
+        $('control-btn').title =
+          'Let your mouse and keyboard reach the desktop';
         $('progress').classList.add('on');
         $('msgbar').classList.add('on');
+        $('msg-input').placeholder = MSG_PLACEHOLDER_RUN;
       }
+      if (ev.idle_timeout != null) idleTimeoutS = Number(ev.idle_timeout);
       setProgress(0);
       card(`<div class="node">▶</div>
             <div class="card-head"><span class="step-label">RUN</span></div>
@@ -853,49 +919,141 @@ function handle(ev) {
     case 'stop_requested':
       card(`<div class="node"></div>Stop signal sent — finishing the current
             step; the pending action will not run.`, 'note warn');
-      $('stop-btn').disabled = true;
-      $('stop-btn').textContent = 'STOPPING…';
+      disableSessionActions('STOPPING…', 'END');
+      break;
+    case 'end_requested':
+      card(`<div class="node"></div>End signal sent — finishing the current
+            step; session will close as complete.`, 'note warn');
+      disableSessionActions('STOP', 'ENDING…');
       break;
     case 'done': {
-      lamp.className = 'lamp ' + (ev.ok ? 'ok' : 'bad');
+      // Task milestone (agent finished → idle) or session end
+      // (stop / end / timeout). terminal + reason distinguish them.
+      agentBusy = false;
       const total = runStartTs ? fmtClock(ev.ts - runStartTs) : '';
       if (total) $('g-clock').textContent = total;
       $('g-step-k').textContent = 'STEPS';
       $('g-step').innerHTML =
         `${String(lastStepN).padStart(2, '0')}<span class="dim"> total</span>`;
+      // timeout may be tagged (reason) or only in summary on older sessions
+      const sum = String(ev.summary || '');
+      const isIdleTimeout = ev.reason === 'idle_timeout'
+        || /idle timeout/i.test(sum);
+      const isUserEnd = ev.reason === 'ended';
+      const term = !!ev.terminal || isIdleTimeout || ev.reason === 'stopped'
+        || isUserEnd;
+      let label, headline, cls, lampCls, node, shotCls;
+      if (isIdleTimeout) {
+        label = 'SESSION ENDED';
+        headline = 'Session ended';
+        cls = 'session-end';
+        lampCls = 'lamp idle';
+        node = '–';
+        shotCls = '';
+      } else if (isUserEnd && ev.ok) {
+        label = 'COMPLETE';
+        headline = 'Session ended';
+        cls = 'done-ok';
+        lampCls = 'lamp ok';
+        node = '✓';
+        shotCls = 'final-ok';
+      } else if (term && !ev.ok) {
+        label = 'STOPPED';
+        headline = 'Session stopped';
+        cls = 'done-bad';
+        lampCls = 'lamp bad';
+        node = '✕';
+        shotCls = 'final-bad';
+      } else if (ev.ok) {
+        // task complete; session usually stays open (idle follows)
+        label = 'COMPLETE';
+        headline = 'Task complete';
+        cls = 'done-ok';
+        lampCls = 'lamp ok';
+        node = '✓';
+        shotCls = 'final-ok';
+      } else {
+        label = 'STOPPED';
+        headline = 'Task did not finish';
+        cls = 'done-bad';
+        lampCls = 'lamp bad';
+        node = '✕';
+        shotCls = 'final-bad';
+      }
+      lamp.className = lampCls;
       const el = card(
-        `<div class="node">${ev.ok ? '✓' : '✕'}</div>
+        `<div class="node">${node}</div>
          <div class="card-head">
-           <span class="step-label">${ev.ok ? 'COMPLETE' : 'STOPPED'}</span>
+           <span class="step-label">${label}</span>
            <span class="lat">${total}</span>
          </div>
-         <div class="reasoning">${ev.ok ? 'Task complete' : 'Task did not finish'}</div>
+         <div class="reasoning">${headline}</div>
          <div class="summary">${esc(ev.summary)}</div>`,
-        'final ' + (ev.ok ? 'done-ok' : 'done-bad'));
+        'final ' + cls);
       if (ev.shot) {
-        const i = addShot('FINAL', ev.shot, ev.ok ? 'final-ok' : 'final-bad');
+        const i = addShot(term ? 'END' : (ev.ok ? 'DONE' : 'END'),
+                          ev.shot, shotCls);
         shots[i].cardEl = el;
         el.classList.add('clickable');
         el.addEventListener('click',
           () => { setMode('steps'); select(i, true); });
       }
+      // terminal done: lock control immediately; run_end reinforces.
+      // Task-complete (non-terminal) stays open for idle resume.
+      if (term) {
+        let why = 'session has ended — take control unavailable';
+        if (isIdleTimeout) why = 'session ended — take control unavailable';
+        else if (isUserEnd) why = 'session complete — take control unavailable';
+        else if (ev.reason === 'stopped')
+          why = 'session stopped — take control unavailable';
+        lockControlEnded(why);
+      }
       break;
     }
+    case 'idle': {
+      agentBusy = false;
+      lamp.className = 'lamp idle';
+      $('progress').classList.remove('on');
+      if (live) {
+        $('msgbar').classList.add('on');
+        $('msg-input').placeholder = MSG_PLACEHOLDER_IDLE;
+        showSessionActions(true);
+      }
+      const toS = Number(ev.timeout_s ?? idleTimeoutS);
+      const toLabel = toS >= 60
+        ? `${Math.round(toS / 60)} min`
+        : `${Math.round(toS)}s`;
+      card(`<div class="node">…</div>Idle — send a message to continue,
+            End to finish successfully, or Stop to abort.
+            Auto-ends after ${toLabel} without activity.`,
+           'note warn');
+      break;
+    }
+    case 'resumed':
+      agentBusy = true;
+      lamp.className = 'lamp thinking';
+      if (live) {
+        $('progress').classList.add('on');
+        $('msg-input').placeholder = MSG_PLACEHOLDER_RUN;
+      }
+      card(`<div class="node">▶</div>Resuming from idle — new message(s)
+            are the current objective.`, 'note warn');
+      break;
     case 'error':
+      agentBusy = false;
       lamp.className = 'lamp bad';
       card(`<div class="node">✕</div>
             <div class="card-head"><span class="step-label">ERROR</span></div>
             <div class="reasoning">${esc(ev.msg)}</div>`, 'final done-bad');
+      lockControlEnded('session errored — take control unavailable');
       break;
     case 'run_end':
       clearInterval(clockTimer);
       clockAnchor = null;
-      running = false;
-      pausedRun = false;
-      $('stop-btn').style.display = 'none';
-      $('stop-btn').textContent = 'STOP';
+      showSessionActions(false);
       $('progress').classList.remove('on');
       $('msgbar').classList.remove('on');
+      lockControlEnded('session has ended — take control unavailable');
       requestAnimationFrame(() =>
         transcript.scrollTop = transcript.scrollHeight);
       break;
@@ -922,10 +1080,36 @@ es.onmessage = e => {
   handle(ev);
 };
 
-$('stop-btn').addEventListener('click', () => {
+function showSessionActions(on) {
+  const wrap = $('session-actions');
+  if (on) {
+    wrap.classList.add('on');
+    $('stop-btn').disabled = false;
+    $('stop-btn').textContent = 'STOP';
+    $('end-btn').disabled = false;
+    $('end-btn').textContent = 'END';
+  } else {
+    wrap.classList.remove('on');
+    $('stop-btn').disabled = false;
+    $('stop-btn').textContent = 'STOP';
+    $('end-btn').disabled = false;
+    $('end-btn').textContent = 'END';
+  }
+}
+function disableSessionActions(stopLabel, endLabel) {
   $('stop-btn').disabled = true;
-  $('stop-btn').textContent = 'STOPPING…';
+  $('stop-btn').textContent = stopLabel;
+  $('end-btn').disabled = true;
+  $('end-btn').textContent = endLabel;
+}
+
+$('stop-btn').addEventListener('click', () => {
+  disableSessionActions('STOPPING…', 'END');
   fetch('/stop', { method: 'POST' });
+});
+$('end-btn').addEventListener('click', () => {
+  disableSessionActions('STOP', 'ENDING…');
+  fetch('/end', { method: 'POST' });
 });
 
 /* ── mid-flight messages ─────────────────────────── */

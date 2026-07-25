@@ -558,6 +558,13 @@ class TestParseHelpers(unittest.TestCase):
         self.assertIn("tool_name", p)
         self.assertIn("[0, 1000]", p)
 
+    def test_system_prompt_close_guidance(self):
+        p = system_prompt_holo()
+        self.assertIn("alt+F4", p)
+        self.assertIn("far right of the title", p)
+        # Must not blanket-ban title-bar close (broke close-browser tasks).
+        self.assertNotIn("avoid title-bar close buttons", p)
+
 
 class TestGenericBodyNoHoloFields(unittest.TestCase):
     """T10 partial — generic body never injects Holo fields."""

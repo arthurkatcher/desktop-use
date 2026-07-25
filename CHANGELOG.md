@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.0.2 (2026-07-25)
+
+### Session idle, End, and status UX
+
+- Agent `done` (and max-steps budget) parks the session as **idle** instead of
+  ending it. Message bar stays open; a user message emits `resumed` and
+  continues the loop with the new text as the current objective.
+- Session ends on **End** (`status=complete`), **Stop** (`status=stopped`),
+  hard **error**, or **idle timeout** (`--idle-timeout` / `IDLE_TIMEOUT`,
+  default 60s since last desktop action or user message).
+- Console **END** button (next to STOP) + `POST /end`: same step-boundary
+  interrupt as Stop, but finishes as successful **complete** (not stopped).
+- New persisted events: `idle`, `resumed`, `end_requested`.
+- Idle lamp amber; idle-timeout card **SESSION ENDED** (not red error);
+  take-control locked after session ends.
+- Home badges: `idle`, `complete`, `ended`, `stopped`.
+
+### Agent desktop guidance
+
+- Prefer keyboard shortcuts `ctrl+alt+t` / `ctrl+alt+b` and desktop
+  Browser / Terminal icons (double-click); do not use right-click menus
+  to launch apps under pcmanfm.
+
 ## 0.0.1 (2026-07-25)
 
 First public MVP of the **desktop-use-hosted** control plane.

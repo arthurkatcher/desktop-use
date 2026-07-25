@@ -196,18 +196,29 @@ class Bus:
             self.clients = [(cq, s) for cq, s in self.clients if cq is not q]
 
 
+# Models often jitter title-bar / icon clicks by more than a few px between
+# identical attempts (session 20260725-140943: ~8-13px). Keep this loose.
+_SIMILAR_XY_PX = 15
+
+
 def _similar(a: dict | None, b: dict | None) -> bool:
-    """Same action modulo a few pixels of coordinate jitter."""
+    """Same action modulo coordinate jitter (see _SIMILAR_XY_PX)."""
     if not a or not b or a.get("type") != b.get("type"):
         return False
-    if "x" in a and "x" in b:
-        return (abs(int(a["x"]) - int(b["x"])) <= 6
-                and abs(int(a["y"]) - int(b["y"])) <= 6)
+    if "x" in a and "x" in b and "y" in a and "y" in b:
+        return (abs(int(a["x"]) - int(b["x"])) <= _SIMILAR_XY_PX
+                and abs(int(a["y"]) - int(b["y"])) <= _SIMILAR_XY_PX)
     return a == b
 
 
 class Runner:
-    """Owns the desktop; executes one session at a time on it."""
+    """Owns the desktop; executes one session at a time on it.
+
+    A session stays open after the agent emits ``done``: status becomes
+    ``idle`` and the message bar can queue a follow-up. The session only
+    ends on Stop, hard error, or idle timeout (default 60s since the
+    last desktop action or user message).
+    """
 
     def __init__(self, desk: Desktop, bus: Bus, store: SessionStore, cfg):
         self.desk = desk
@@ -215,17 +226,21 @@ class Runner:
         self.store = store
         self.cfg = cfg
         self.busy = threading.Lock()
-        self.stop_event = threading.Event()
+        self.stop_event = threading.Event()   # abort: status stopped
+        self.end_event = threading.Event()    # clean close: status complete
         self.pause_event = threading.Event()  # user holds the desktop
         self.msg_lock = threading.Lock()
         self.pending_msgs: list[str] = []     # mid-flight user messages
+        self.wake_event = threading.Event()   # message / control wake idle
         self.active_sid: str | None = None
 
     def launch(self, task: str) -> str | None:
         if not self.busy.acquire(blocking=False):
             return None
         self.stop_event.clear()
+        self.end_event.clear()
         self.pause_event.clear()
+        self.wake_event.clear()
         with self.msg_lock:
             self.pending_msgs = []
         meta = self.store.create(task, self.cfg.model)
@@ -233,6 +248,22 @@ class Runner:
         threading.Thread(target=self._run, args=(meta["id"], task),
                          daemon=True).start()
         return meta["id"]
+
+    def _user_close(self) -> str | None:
+        """If the operator closed the session: ``stopped`` or ``ended``."""
+        if self.stop_event.is_set():
+            return "stopped"
+        if self.end_event.is_set():
+            return "ended"
+        return None
+
+    def _settle(self, seconds: float = 0.8) -> None:
+        """Wait for action settle, returning early on Stop/End."""
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if self._user_close():
+                return
+            time.sleep(min(0.1, max(0.0, deadline - time.time())))
 
     def _emit(self, sid: str, seq: int, **event) -> int:
         event.update(ts=time.time(), sid=sid, seq=seq)
@@ -244,11 +275,14 @@ class Runner:
         self.store.save_shot(sid, name, png)
         return f"/shot/{sid}/{name}.png"
 
+    def _idle_timeout_s(self) -> float:
+        return float(getattr(self.cfg, "idle_timeout", 60) or 60)
+
     def _wait_control(self, sid: str, seq: int, history: list[str]) -> int:
         """Block while the user holds the desktop; note the handback."""
-        while self.pause_event.is_set() and not self.stop_event.is_set():
+        while self.pause_event.is_set() and not self._user_close():
             time.sleep(0.3)
-        resumed = not self.stop_event.is_set()
+        resumed = not self._user_close()
         if resumed:
             history.append(
                 "NOTE: the user took manual control of the desktop and may "
@@ -256,7 +290,8 @@ class Runner:
                 "current screenshot carefully before acting.")
         return self._emit(sid, seq, t="control_returned", resumed=resumed)
 
-    def _drain_msgs(self, sid: str, seq: int, history: list[str]) -> int:
+    def _drain_msgs(self, sid: str, seq: int,
+                    history: list[str]) -> tuple[int, list[str]]:
         with self.msg_lock:
             msgs, self.pending_msgs = self.pending_msgs, []
         for text in msgs:
@@ -264,7 +299,48 @@ class Runner:
                 f'USER MESSAGE (mid-task, takes precedence over earlier '
                 f'plans): "{text}"')
             seq = self._emit(sid, seq, t="user_message", text=text)
-        return seq
+        return seq, msgs
+
+    def _wait_idle(self, sid: str, seq: int, history: list[str],
+                   last_activity: float) -> tuple[int, str, float]:
+        """Park until a user message, Stop/End, or idle timeout.
+
+        Returns ``(seq, reason, last_activity)`` with reason one of
+        ``resume`` | ``stopped`` | ``ended`` | ``timeout``.
+        """
+        timeout = self._idle_timeout_s()
+        self.store.update(sid, status="idle")
+        seq = self._emit(sid, seq, t="idle", timeout_s=timeout)
+        while True:
+            close = self._user_close()
+            if close:
+                return seq, close, last_activity
+            now = time.time()
+            if now - last_activity >= timeout:
+                return seq, "timeout", last_activity
+            if self.pause_event.is_set():
+                seq = self._wait_control(sid, seq, history)
+                last_activity = time.time()
+                close = self._user_close()
+                if close:
+                    return seq, close, last_activity
+                # still idle after handback unless a message arrived
+                self.store.update(sid, status="idle")
+                seq = self._emit(sid, seq, t="idle", timeout_s=timeout)
+                continue
+            with self.msg_lock:
+                has_msg = bool(self.pending_msgs)
+            if has_msg:
+                self.store.update(sid, status="running")
+                history.append(
+                    "NOTE: previous objective was parked (done or step "
+                    "budget). New user message(s) are the current objective "
+                    "— re-examine the screenshot carefully before acting.")
+                seq = self._emit(sid, seq, t="resumed")
+                return seq, "resume", time.time()
+            remaining = timeout - (now - last_activity)
+            self.wake_event.wait(timeout=min(0.5, max(0.05, remaining)))
+            self.wake_event.clear()
 
     def _run(self, sid: str, task: str):
         desk, cfg, store = self.desk, self.cfg, self.store
@@ -272,114 +348,213 @@ class Runner:
         backend_flag = getattr(cfg, "model_backend", "auto")
         resolved = resolve_model_backend(
             cfg.base_url, cfg.model, backend_flag)
+        idle_s = self._idle_timeout_s()
         seq = self._emit(sid, seq, t="run_start", task=task,
-                         max_steps=cfg.max_steps, backend=resolved)
+                         max_steps=cfg.max_steps, backend=resolved,
+                         idle_timeout=idle_s)
         history: list[str] = []
         prev_png: bytes | None = None
         last_action: dict | None = None
         repeats = 0
+        no_change_streak = 0
         status = "incomplete"
+        last_ok: bool | None = None
+        step = 0
+        last_activity = time.time()
         try:
             with httpx.Client() as http:
-                for step in range(1, cfg.max_steps + 1):
-                    if self.pause_event.is_set():
-                        seq = self._wait_control(sid, seq, history)
-                    seq = self._drain_msgs(sid, seq, history)
-                    if self.stop_event.is_set():
-                        status = "stopped"
-                        seq = self._emit(sid, seq, t="done", ok=False,
-                                         summary="Stopped by you.")
-                        return
-                    png = desk.screenshot_png()
-                    store.update(sid, steps=step)
-                    seq = self._emit(sid, seq, t="step", n=step,
-                                     shot=self._shot(sid, str(step), png))
-                    decision = None
-                    complaint = None
-                    for attempt in (1, 2, 3):
-                        try:
-                            decision = ask_model(
-                                http, cfg.base_url, cfg.api_key, cfg.model,
-                                task, png, history,
-                                (desk.width, desk.height), prev_png=prev_png,
-                                complaint=complaint,
-                                backend=backend_flag)
+                while True:
+                    # One active burst: up to max_steps until done / stop /
+                    # error. Then park idle instead of ending the session.
+                    burst_end = None  # "done" | "budget" | "stop" | "error"
+                    for _ in range(cfg.max_steps):
+                        if self.pause_event.is_set():
+                            seq = self._wait_control(sid, seq, history)
+                            last_activity = time.time()
+                        seq, _ = self._drain_msgs(sid, seq, history)
+                        close = self._user_close()
+                        if close:
+                            status, ok, summary = (
+                                ("stopped", False, "Stopped by you.")
+                                if close == "stopped"
+                                else ("complete", True,
+                                      "Session ended by you."))
+                            seq = self._emit(
+                                sid, seq, t="done", ok=ok, terminal=True,
+                                reason=close, summary=summary)
+                            return
+                        step += 1
+                        png = desk.screenshot_png()
+                        store.update(sid, steps=step, status="running")
+                        seq = self._emit(sid, seq, t="step", n=step,
+                                         shot=self._shot(sid, str(step), png))
+                        decision = None
+                        complaint = None
+                        for attempt in (1, 2, 3):
+                            try:
+                                decision = ask_model(
+                                    http, cfg.base_url, cfg.api_key,
+                                    cfg.model, task, png, history,
+                                    (desk.width, desk.height),
+                                    prev_png=prev_png, complaint=complaint,
+                                    backend=backend_flag)
+                                break
+                            except (httpx.HTTPError, ValueError) as e:
+                                complaint = str(e)
+                                seq = self._emit(
+                                    sid, seq, t="note", n=step,
+                                    msg=f"model call failed "
+                                        f"(try {attempt}): {e}")
+                        if decision is None:
+                            status = "error"
+                            seq = self._emit(
+                                sid, seq, t="error",
+                                msg="model failed 3 times, run aborted")
+                            return
+
+                        action = decision.get("action", {})
+                        seq = self._emit(
+                            sid, seq, t="decision", n=step,
+                            reasoning=decision.get("reasoning", ""),
+                            action=action)
+
+                        if action.get("type") == "done":
+                            ok = bool(action.get("success"))
+                            last_ok = ok
+                            last_activity = time.time()
+                            # task milestone only — session parks idle next
+                            seq = self._emit(
+                                sid, seq, t="done", ok=ok, terminal=False,
+                                reason="task",
+                                summary=action.get("summary", ""),
+                                shot=self._shot(sid, "final",
+                                                desk.screenshot_png()))
+                            burst_end = "done"
                             break
-                        except (httpx.HTTPError, ValueError) as e:
-                            complaint = str(e)
-                            seq = self._emit(sid, seq, t="note", n=step,
-                                             msg=f"model call failed "
-                                                 f"(try {attempt}): {e}")
-                    if decision is None:
-                        status = "error"
-                        seq = self._emit(sid, seq, t="error",
-                                         msg="model failed 3 times, "
-                                             "run aborted")
-                        return
+                        close = self._user_close()
+                        if close:
+                            status, ok, summary = (
+                                ("stopped", False, "Stopped by you.")
+                                if close == "stopped"
+                                else ("complete", True,
+                                      "Session ended by you."))
+                            seq = self._emit(sid, seq, t="skipped", n=step)
+                            seq = self._emit(
+                                sid, seq, t="done", ok=ok, terminal=True,
+                                reason=close, summary=summary)
+                            return
+                        if self.pause_event.is_set():
+                            # user grabbed the desktop mid-decision: discard
+                            # the pending action, wait, then re-read screen
+                            seq = self._emit(sid, seq, t="skipped", n=step)
+                            seq = self._wait_control(sid, seq, history)
+                            last_activity = time.time()
+                            prev_png = png
+                            continue
+                        if self.pending_msgs:
+                            # user message mid-decision: discard, re-decide
+                            seq = self._emit(sid, seq, t="skipped", n=step)
+                            seq, msgs = self._drain_msgs(
+                                sid, seq, history)
+                            last_activity = time.time()
+                            if msgs:
+                                task = msgs[-1]
+                            prev_png = png
+                            continue
 
-                    action = decision.get("action", {})
-                    seq = self._emit(sid, seq, t="decision", n=step,
-                                     reasoning=decision.get("reasoning", ""),
-                                     action=action)
+                        if _similar(action, last_action):
+                            repeats += 1
+                        else:
+                            repeats = 0
+                        last_action = action
 
-                    if action.get("type") == "done":
-                        ok = bool(action.get("success"))
-                        status = "complete" if ok else "incomplete"
-                        seq = self._emit(sid, seq, t="done", ok=ok,
-                                         summary=action.get("summary", ""),
-                                         shot=self._shot(
-                                             sid, "final",
-                                             desk.screenshot_png()))
-                        return
-                    if self.stop_event.is_set():
-                        status = "stopped"
-                        seq = self._emit(sid, seq, t="skipped", n=step)
-                        seq = self._emit(sid, seq, t="done", ok=False,
-                                         summary="Stopped by you.")
-                        return
-                    if self.pause_event.is_set():
-                        # user grabbed the desktop mid-decision: discard the
-                        # pending action, wait, then re-read the screen
-                        seq = self._emit(sid, seq, t="skipped", n=step)
-                        seq = self._wait_control(sid, seq, history)
-                        prev_png = png
-                        continue
-                    if self.pending_msgs:
-                        # user message arrived mid-decision: discard the
-                        # pending action, inject the message, re-decide
-                        seq = self._emit(sid, seq, t="skipped", n=step)
-                        seq = self._drain_msgs(sid, seq, history)
-                        prev_png = png
-                        continue
-
-                    if _similar(action, last_action):
-                        repeats += 1
-                    else:
-                        repeats = 0
-                    last_action = action
-
-                    execute(desk, action)
-                    self.stop_event.wait(0.8)  # settle; wakes early on stop
-                    after = desk.screenshot_png()
-                    seq = self._emit(sid, seq, t="result", n=step,
-                                     changed=after != png)
-                    history.append(
-                        f"step {step}: {json.dumps(action)} -> "
-                        + ("screen changed" if after != png
-                           else "screen did NOT change"))
-                    if repeats >= 2:
+                        execute(desk, action)
+                        last_activity = time.time()
+                        self._settle(0.8)  # settle; early on Stop/End
+                        after = desk.screenshot_png()
+                        changed = after != png
+                        seq = self._emit(sid, seq, t="result", n=step,
+                                         changed=changed)
                         history.append(
-                            f"NOTE: you have sent this exact action "
-                            f"{repeats + 1} times in a row and it is not "
-                            "working. Change strategy: different "
-                            "coordinates, keyboard navigation, or a "
-                            "different UI path.")
-                    prev_png = png
-            seq = self._emit(sid, seq, t="done", ok=False,
-                             summary=f"stopped after {cfg.max_steps} steps "
-                                     "without finishing",
-                             shot=self._shot(sid, "final",
-                                             desk.screenshot_png()))
+                            f"step {step}: {json.dumps(action)} -> "
+                            + ("screen changed" if changed
+                               else "screen did NOT change"))
+                        if changed:
+                            no_change_streak = 0
+                        else:
+                            no_change_streak += 1
+                        if repeats >= 2:
+                            history.append(
+                                f"NOTE: you have sent a near-identical "
+                                f"action {repeats + 1} times in a row and "
+                                "it is not working. Change strategy: "
+                                "different coordinates (not a few-pixel "
+                                "nudge), keyboard navigation (e.g. alt+F4 "
+                                "to close a window), or a different UI path.")
+                        elif no_change_streak >= 2:
+                            history.append(
+                                f"NOTE: the screen did not change for the "
+                                f"last {no_change_streak} actions. Stop "
+                                "micro-adjusting the same click. Try a "
+                                "keyboard shortcut (alt+F4 to close the "
+                                "focused window, ctrl+l for the address "
+                                "bar, Escape to dismiss menus) or a clearly "
+                                "different on-screen control.")
+                        prev_png = png
+                    else:
+                        # max_steps for this burst, no done — park, not end
+                        burst_end = "budget"
+                        last_activity = time.time()
+                        seq = self._emit(
+                            sid, seq, t="note",
+                            msg=(f"step budget ({cfg.max_steps}) reached "
+                                 "— idle. Send a message to continue, "
+                                 "End to finish, or Stop to abort."))
+
+                    if burst_end is None:
+                        # defensive: loop exited without setting reason
+                        burst_end = "budget"
+
+                    seq, reason, last_activity = self._wait_idle(
+                        sid, seq, history, last_activity)
+                    if reason == "stopped":
+                        status = "stopped"
+                        seq = self._emit(
+                            sid, seq, t="done", ok=False, terminal=True,
+                            reason="stopped", summary="Stopped by you.")
+                        return
+                    if reason == "ended":
+                        status = "complete"
+                        seq = self._emit(
+                            sid, seq, t="done", ok=True, terminal=True,
+                            reason="ended",
+                            summary="Session ended by you.",
+                            shot=self._shot(sid, "final",
+                                            desk.screenshot_png()))
+                        return
+                    if reason == "timeout":
+                        # clean park-out, not success/error
+                        status = "ended"
+                        to_s = int(self._idle_timeout_s())
+                        to_label = (f"{to_s // 60} min" if to_s >= 60
+                                    else f"{to_s}s")
+                        seq = self._emit(
+                            sid, seq, t="done", ok=False, terminal=True,
+                            reason="idle_timeout",
+                            summary=(f"Idle timeout ({to_label} since last "
+                                     "action) — session ended."),
+                            shot=self._shot(sid, "final",
+                                            desk.screenshot_png()))
+                        return
+                    # resume: inject queued messages and keep going
+                    seq, msgs = self._drain_msgs(sid, seq, history)
+                    last_activity = time.time()
+                    if msgs:
+                        task = msgs[-1]
+                    repeats = 0
+                    no_change_streak = 0
+                    last_action = None
+                    prev_png = None
         except Exception as e:
             status = "error"
             seq = self._emit(sid, seq, t="error", msg=str(e))
@@ -478,6 +653,7 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
                 if sid:
                     with runner.msg_lock:
                         runner.pending_msgs.append(text)
+                    runner.wake_event.set()
                     bus.emit({"t": "message_sent", "sid": sid,
                               "text": text, "ts": time.time()})
                 self._send(200, json.dumps({"queued": sid is not None})
@@ -487,6 +663,7 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
                 sid = runner.active_sid
                 if sid:
                     runner.pause_event.set()
+                    runner.wake_event.set()
                     bus.emit({"t": "control_taken", "sid": sid,
                               "ts": time.time()})
                 self._send(200, json.dumps({"paused": sid is not None})
@@ -502,13 +679,26 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
                 if not resume:
                     runner.stop_event.set()
                 runner.pause_event.clear()
+                runner.wake_event.set()
                 self._send(200, b'{"ok":true}', "application/json")
                 return
             if self.path == "/stop":
                 sid = runner.active_sid
                 if sid:
                     runner.stop_event.set()
+                    runner.wake_event.set()
                     bus.emit({"t": "stop_requested", "sid": sid,
+                              "ts": time.time()})
+                self._send(200, b'{"ok":true}', "application/json")
+                return
+            if self.path == "/end":
+                # Clean close: same step-boundary interrupt as Stop, but
+                # session status is complete (success) not stopped.
+                sid = runner.active_sid
+                if sid:
+                    runner.end_event.set()
+                    runner.wake_event.set()
+                    bus.emit({"t": "end_requested", "sid": sid,
                               "ts": time.time()})
                 self._send(200, b'{"ok":true}', "application/json")
                 return
@@ -555,6 +745,8 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
                          "height": runner.desk.height,
                          "max_steps": cfg.max_steps, "live": live,
                          "status": meta["status"],
+                         "idle_timeout": float(
+                             getattr(cfg, "idle_timeout", 60) or 60),
                          "mode": "remote" if remote else "local"}
                 stream = (getattr(cfg, "stream_url", None) or "").strip()
                 if remote and stream:
@@ -609,6 +801,11 @@ def main():
                  or "auto"),
         help="model harness: auto|generic|holo (see agent.py)")
     parser.add_argument("--max-steps", type=int, default=15)
+    parser.add_argument(
+        "--idle-timeout", type=float,
+        default=float(os.environ.get("IDLE_TIMEOUT", "60")),
+        help="seconds since last action/message before ending an idle "
+             "session (default 60 = 1 min; env IDLE_TIMEOUT)")
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--vnc-port", type=int, default=5900)
     parser.add_argument("--ws-port", type=int, default=6080)

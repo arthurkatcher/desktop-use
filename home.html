@@ -187,11 +187,18 @@
   }
   .badge.running  { color: var(--amber); border-color: var(--amber-deep);
                     animation: breathe 1.6s ease-in-out infinite; }
+  /* idle / ended = wait or clean close — amber family, not error red */
+  .badge.idle, .badge.ended {
+    color: var(--amber); border-color: var(--amber-deep);
+  }
   .badge.complete { color: var(--ok); border-color:
                     color-mix(in srgb, var(--ok) 50%, var(--line)); }
   .badge.stopped, .badge.incomplete, .badge.error {
     color: var(--bad); border-color:
     color-mix(in srgb, var(--bad) 45%, var(--line)); }
+  .badge.idle_timeout {
+    color: var(--amber); border-color: var(--amber-deep);
+  }
 
   .empty {
     padding: 30px 22px; border: 1px dashed var(--line); border-radius: 10px;
@@ -283,10 +290,13 @@ async function load() {
   const anim = firstRender;
   firstRender = false;
   $('list').innerHTML = rows.map((m, i) => {
-    const status = m.active ? 'running' : m.status;
+    const status = m.active
+      ? (m.status === 'idle' ? 'idle' : 'running')
+      : m.status;
+    const shotName = (m.active || m.status === 'running' || m.status === 'idle')
+      ? m.steps : 'final';
     const shot = m.steps > 0
-      ? `style="background-image:url('/shot/${esc(m.id)}/${
-          m.status === 'running' ? m.steps : 'final'}.png')"` : '';
+      ? `style="background-image:url('/shot/${esc(m.id)}/${shotName}.png')"` : '';
     const thumb = m.steps > 0
       ? `<span class="thumb" ${shot}></span>`
       : `<span class="thumb blank">NO IMG</span>`;

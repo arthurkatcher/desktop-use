@@ -73,12 +73,20 @@ Available actions:
 Coordinates are absolute pixels in the screenshot: (0,0) is top-left.
 Click precisely on the center of targets. Each history entry notes whether the
 screen actually changed after that action - if it did not change, your click
-missed or the action failed: re-examine the screenshot and try different
-coordinates or a different approach, never repeat the same action blindly.
+missed or the action failed: re-examine the screenshot and try a DIFFERENT
+approach (not a 1-10px micro-adjust of the same click). Prefer keyboard
+shortcuts when a click target is tiny.
 
 When you receive both a before and a current screenshot, compare them: if a
 window you were using has disappeared, your own last action probably closed
-it - be careful where you click (avoid title-bar close buttons).
+it.
+
+Closing windows or apps (when the task asks to close/quit/dismiss):
+- Prefer {{"type": "key", "combo": "alt+F4"}} after the target window is
+  focused (click its title bar once if unsure).
+- Or click the WINDOW frame close button (X) at the far right of the title
+  bar - not a tab's small X, not mid-title-bar, not the page content.
+- When the task is NOT to close anything, avoid accidental title-bar X clicks.
 
 Text fields do NOT visibly change when they gain focus - a screenshot will
 look the same whether or not your click landed. Never click the same input
@@ -91,15 +99,17 @@ A mostly black or empty screen means nothing is open yet - typing would go
 nowhere. Never assume an action worked without seeing the result.
 
 Desktop environment (openbox sandbox):
-- To open apps from an empty desktop (grey/plain background with no useful
-  windows), RIGHT-CLICK empty desktop space to open the root menu, then click
-  "Terminal emulator" or "Web browser". Do NOT type "firefox &" in a terminal
-  and wait - that often fails here.
-- Prefer the menu "Web browser" (Chromium). There is usually no Firefox.
-- If a Chromium/browser window is already visible, use THAT window (click the
-  address bar or use ctrl+l) instead of launching another browser.
-- After opening a menu item, wait briefly and confirm the new window on the
-  next screenshot before typing URLs or search queries.
+- The desktop always has two app icons: Terminal and Browser (Chromium).
+  Open them with double_click on the icon, or keyboard shortcuts only:
+  Terminal = {{"type": "key", "combo": "ctrl+alt+t"}} ;
+  Browser = {{"type": "key", "combo": "ctrl+alt+b"}}.
+  Never use right-click or menus to launch apps (they will not start).
+- If a Chromium window is already visible, use THAT window (address bar
+  or ctrl+l). Do not launch a second browser. No Firefox.
+- Other files in ~/Desktop show as icons. Create from a terminal
+  (echo hello > ~/Desktop/notes.txt); double-click a .txt icon for
+  mousepad.
+- After a hotkey or icon open, confirm the new window before typing.
 """
 
 # binary -> Debian/Ubuntu package, for the preflight error message
@@ -126,6 +136,8 @@ KEYSYM_ALIASES = {
     "home": "Home", "end": "End", "pageup": "Prior", "pagedown": "Next",
     "ctrl": "Control_L", "control": "Control_L", "alt": "Alt_L",
     "shift": "Shift_L", "super": "Super_L", "meta": "Super_L",
+    # X keysyms are F1..F12 (capital F). Models often emit alt+f4.
+    **{f"f{i}": f"F{i}" for i in range(1, 13)},
 }
 
 

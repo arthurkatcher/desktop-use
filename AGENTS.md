@@ -59,7 +59,11 @@ or remote); at least one real console session before claiming a change works.
    messages all interrupt the same way: an in-flight model decision is
    discarded and emitted as a `skipped` event, never half-applied. Any new
    interruption mechanism follows the same contract.
-2. **Events are append-only and replayable.** Anything the console displays
+2. **Session ends only on Stop, error, or idle timeout.** Agent `done` and
+   max-steps park the session as `idle` (`idle` / `resumed` events); the
+   message bar stays open and a user message continues the loop. Do not
+   emit `run_end` or release the desktop lock on task completion alone.
+3. **Events are append-only and replayable.** Anything the console displays
    must be reconstructable from `events.jsonl` alone. Persisted events carry
    monotonic `seq` numbers; the client dedupes on them across SSE reconnects.
    Transient bus-only events (no `seq`) are allowed only for cosmetic
