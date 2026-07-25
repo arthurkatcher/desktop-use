@@ -1,10 +1,19 @@
-# session recordings: screenshots + event logs of the local machine
+# session recordings: screenshots + event logs of the machine
 sessions/
+
+# secrets and local env (never commit)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
 
 # python
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
 
 # editors / os
 .idea/

@@ -37,6 +37,18 @@ import httpx
 from Xlib import XK, X, display as xdisplay
 from Xlib.ext import xtest
 
+from model_backends import (
+    AGENT_ACTION_TYPES,
+    build_generic_request_body,
+    build_holo_request_body,
+    clamp_scroll_amount,
+    extract_message_content,
+    normalize_decision,
+    parse_json_object_from_text,
+    resolve_model_backend,
+    system_prompt_holo,
+)
+
 SYSTEM_PROMPT = """\
 You are a computer-use agent controlling a Linux desktop through screenshots.
 Each turn you receive the current screenshot ({width}x{height} pixels) and the
@@ -77,6 +89,17 @@ Only emit "done" with success=true when the CURRENT screenshot visually
 confirms the goal state (e.g. the requested output is readable on screen).
 A mostly black or empty screen means nothing is open yet - typing would go
 nowhere. Never assume an action worked without seeing the result.
+
+Desktop environment (openbox sandbox):
+- To open apps from an empty desktop (grey/plain background with no useful
+  windows), RIGHT-CLICK empty desktop space to open the root menu, then click
+  "Terminal emulator" or "Web browser". Do NOT type "firefox &" in a terminal
+  and wait - that often fails here.
+- Prefer the menu "Web browser" (Chromium). There is usually no Firefox.
+- If a Chromium/browser window is already visible, use THAT window (click the
+  address bar or use ctrl+l) instead of launching another browser.
+- After opening a menu item, wait briefly and confirm the new window on the
+  next screenshot before typing URLs or search queries.
 """
 
 # binary -> Debian/Ubuntu package, for the preflight error message
@@ -150,7 +173,8 @@ class Desktop:
 
     def scroll(self, direction: str, amount: int = 3):
         button = 4 if direction == "up" else 5
-        for _ in range(max(1, amount)):
+        n = clamp_scroll_amount(amount)
+        for _ in range(n):
             xtest.fake_input(self.dpy, X.ButtonPress, button)
             xtest.fake_input(self.dpy, X.ButtonRelease, button)
             self._flush()
@@ -215,11 +239,54 @@ class Desktop:
         self._flush()
 
 
+def _supports_assistant_prefill(model: str) -> bool:
+    """Some Anthropic routes reject trailing assistant prefill entirely.
+
+    Claude 5 family (sonnet-5 / opus-5 / haiku-5 and claude-*-5 slugs) must
+    end on a user message. Claude 4.5 and earlier still accept prefill on
+    typical OpenRouter/compat routes, so leave them alone.
+    """
+    m = model.lower()
+    # Claude 5 family: conversation must end on user.
+    if "sonnet-5" in m or "opus-5" in m or "haiku-5" in m:
+        return False
+    if re.search(r"claude-(sonnet|opus|haiku)-5(?:\b|[.-])", m):
+        return False
+    if re.search(r"claude-5(?:\b|[.-])", m):
+        return False
+    return True
+
+
+def _is_real_display(name: str) -> bool:
+    """True for the user's real X session (:0, :0.0, :1.1, …)."""
+    if not name:
+        return False
+    try:
+        # ":0", ":0.0", "localhost:1.0" -> display number before optional .screen
+        host_disp = name.rsplit(":", 1)[-1]
+        num = int(host_disp.split(".", 1)[0])
+    except (ValueError, IndexError):
+        return False
+    return num in (0, 1)
+
+
+# AGENT_ACTION_TYPES imported from model_backends (shared allowlist).
+
+
 def ask_model(
     http: httpx.Client, base_url: str, api_key: str, model: str,
     task: str, png: bytes, history: list[str], size: tuple[int, int],
     prev_png: bytes | None = None, complaint: str | None = None,
+    backend: str | None = None,
 ) -> dict:
+    """Call the model and return {reasoning, action} with pixel coords.
+
+    backend: auto|generic|holo|None — resolved via resolve_model_backend.
+    Holo path: no prefill, structured_outputs, scale [0,1000]→pixels.
+    Generic path: unchanged pixels + prefill policy + OpenRouter gate.
+    """
+    resolved = resolve_model_backend(base_url, model, backend)
+    width, height = size[0], size[1]
     history_text = "\n".join(history[-20:]) or "(no actions yet)"
     content: list[dict] = [
         {"type": "text",
@@ -247,54 +314,92 @@ def ask_model(
         {"type": "image_url", "image_url": {"url":
             "data:image/png;base64," + base64.b64encode(png).decode()}},
     ]
+    if resolved == "holo":
+        system = system_prompt_holo()
+        use_prefill = False
+    else:
+        system = SYSTEM_PROMPT.format(width=width, height=height)
+        # prefill forces JSON continuation on models that allow it; Claude 5
+        # rejects trailing assistant messages ("must end with a user message").
+        use_prefill = _supports_assistant_prefill(model)
     messages = [
-        {"role": "system",
-         "content": SYSTEM_PROMPT.format(width=size[0], height=size[1])},
+        {"role": "system", "content": system},
         {"role": "user", "content": content},
-        # prefill: the reply can only continue as JSON, which stops
-        # tool-call-syntax slips (<function_calls>...) at the source
-        {"role": "assistant", "content": "{"},
     ]
-    body = {"model": model, "messages": messages, "temperature": 0,
-            "max_tokens": 4000}
-    if "openrouter" in base_url:
-        # some hosted models have mandatory hidden thinking that counts
-        # against max_tokens; keep it minimal so the JSON always fits
-        body["reasoning"] = {"effort": "low"}
+    if use_prefill:
+        # Mistral platform rejects trailing assistant without prefix=True
+        # ("Expected last role User or Tool (or Assistant with prefix True)").
+        prefill_msg: dict = {"role": "assistant", "content": "{"}
+        mlow = model.lower()
+        bu = (base_url or "").lower()
+        if (
+            "mistral.ai" in bu
+            or mlow.startswith("mistral")
+            or mlow.startswith("ministral")
+            or mlow.startswith("pixtral")
+        ):
+            prefill_msg["prefix"] = True
+        messages.append(prefill_msg)
+    if resolved == "holo":
+        body = build_holo_request_body(model=model, messages=messages)
+    else:
+        body = build_generic_request_body(
+            model=model, messages=messages, base_url=base_url)
     resp = http.post(
         f"{base_url.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json=body,
         timeout=180,
     )
-    resp.raise_for_status()
-    choice = resp.json()["choices"][0]
-    text = choice["message"]["content"]
-    # backends that honor the prefill return a continuation ("..."} ), those
-    # that ignore it return a full object ({...}) - try both readings
-    obj = None
-    for candidate in ("{" + text, text):
-        start = candidate.find("{")
-        if start == -1:
-            continue
-        try:
-            obj, _ = json.JSONDecoder().raw_decode(candidate[start:])
-            break
-        except json.JSONDecodeError:
-            continue
-    if obj is None:
-        raise ValueError(f"unparseable model reply "
-                         f"(finish_reason={choice.get('finish_reason')}): "
-                         f"{text[:200]!r}")
-    action = obj.get("action") if isinstance(obj, dict) else None
-    if not isinstance(action, dict) or "type" not in action:
-        raise ValueError('reply JSON lacks an "action" object with a "type" '
-                         f"field: {text[:200]!r}")
-    return obj
+    try:
+        payload = resp.json()
+    except json.JSONDecodeError:
+        raise ValueError(
+            f"model API error (HTTP {resp.status_code}): "
+            f"{(resp.text or '')[:400]!r}") from None
+    if resp.status_code >= 400 or "choices" not in payload:
+        err = payload.get("error", payload) if isinstance(payload, dict) \
+            else payload
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("metadata", {}).get("raw") \
+                or json.dumps(err)[:400]
+        else:
+            msg = str(err)[:400]
+        raise ValueError(
+            f"model API error (HTTP {resp.status_code}): {msg}")
+    choice = payload["choices"][0]
+    message = choice.get("message") or {}
+    text = extract_message_content(message)
+    try:
+        obj = parse_json_object_from_text(text, use_prefill=use_prefill)
+    except ValueError as e:
+        raise ValueError(
+            f"unparseable model reply "
+            f"(finish_reason={choice.get('finish_reason')}): "
+            f"{text[:200]!r}") from e
+    return normalize_decision(
+        resolved, obj, width=width, height=height, message=message)
 
 
-def execute(desk: Desktop, action: dict) -> str:
+def execute(desk, action: dict) -> str:
+    """Dispatch one action to a local Desktop or RemoteDesktop.
+
+    wait is always local so the control plane owns the delay. Remote
+    sandboxes receive the full action dict via desk.execute(action).
+    Unknown / sandbox-only types (e.g. spawn) are rejected, never POSTed.
+    """
     kind = action.get("type")
+    if kind == "wait":
+        time.sleep(min(float(action.get("seconds", 1)), 5))
+        return json.dumps(action)
+    if kind not in AGENT_ACTION_TYPES:
+        return f"unknown action {kind!r}, ignored"
+
+    # RemoteDesktop: whole action over HTTP (see remote.py). Prefer an
+    # explicit marker so wrappers/mocks still hit the whole-action path.
+    if getattr(desk, "is_remote", False):
+        return desk.execute(action)
+
     if kind == "click":
         desk.click(int(action["x"]), int(action["y"]))
     elif kind == "double_click":
@@ -312,9 +417,8 @@ def execute(desk: Desktop, action: dict) -> str:
     elif kind == "key":
         desk.key_combo(str(action["combo"]))
     elif kind == "scroll":
-        desk.scroll(action.get("direction", "down"), int(action.get("amount", 3)))
-    elif kind == "wait":
-        time.sleep(min(float(action.get("seconds", 1)), 5))
+        desk.scroll(action.get("direction", "down"),
+                    clamp_scroll_amount(action.get("amount", 3)))
     else:
         return f"unknown action {kind!r}, ignored"
     return json.dumps(action)
@@ -368,15 +472,17 @@ class ManagedEnv:
         print(f"managed env: {self.display} torn down")
 
 
-def probe(desk: Desktop):
+def probe(desk):
     print(f"display {desk.name}: {desk.width}x{desk.height}")
     png = desk.screenshot_png()
     out = os.path.join(tempfile.gettempdir(), "desktop-use-probe.png")
     with open(out, "wb") as f:
         f.write(png)
     print(f"screenshot ok ({len(png)} bytes) -> {out}")
-    desk.move(desk.width // 2, desk.height // 2)
-    print("pointer moved to screen center via XTest")
+    cx, cy = desk.width // 2, desk.height // 2
+    desk.move(cx, cy)
+    kind = "sandbox API" if getattr(desk, "is_remote", False) else "XTest"
+    print(f"pointer moved to screen center via {kind}")
     print("probe passed")
 
 
@@ -387,27 +493,75 @@ def main():
                         help="attach to an existing X display and leave it "
                              "running; default is to spawn a private Xephyr "
                              ":2 and tear it down on exit")
+    parser.add_argument("--sandbox-url",
+                        default=(os.environ.get("SANDBOX_URL")
+                                 or os.environ.get("DESKTOP_SANDBOX_URL")
+                                 or "") or None,
+                        help="desktop-sandbox API base "
+                             "(e.g. http://127.0.0.1:7090); skips local Xephyr")
+    parser.add_argument("--stream-url",
+                        default=(os.environ.get("STREAM_URL")
+                                 or os.environ.get("DESKTOP_STREAM_URL")
+                                 or "") or None,
+                        help="noVNC/websockify websocket URL for live view "
+                             "(console; accepted here for env symmetry)")
+    parser.add_argument("--sandbox-token",
+                        default=(os.environ.get("SANDBOX_TOKEN")
+                                 or os.environ.get("DESKTOP_SANDBOX_TOKEN")
+                                 or "") or None,
+                        help="Bearer / X-Sandbox-Token for the sandbox API")
     parser.add_argument("--base-url",
                         default=os.environ.get("OPENAI_BASE_URL",
                                                "http://localhost:11434/v1"))
     parser.add_argument("--model",
                         default=os.environ.get("LOCAL_LOOP_MODEL", "qwen2.5vl"))
     parser.add_argument("--api-key",
-                        default=os.environ.get("OPENAI_API_KEY", "local"))
+                        default=(os.environ.get("OPENAI_API_KEY")
+                                 or os.environ.get("HAI_API_KEY")
+                                 or "local"))
+    parser.add_argument(
+        "--model-backend",
+        choices=("auto", "generic", "holo"),
+        default=(os.environ.get("MODEL_BACKEND")
+                 or os.environ.get("DESKTOP_USE_MODEL_BACKEND")
+                 or "auto"),
+        help="model harness: auto (detect Holo from URL/model), "
+             "generic (pixels + prefill), or holo (structured [0,1000])")
     parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--allow-real-display", action="store_true",
                         help="permit running on :0 / :1 (the real session)")
     parser.add_argument("--probe", action="store_true",
-                        help="verify screenshot + XTest input, no model needed")
+                        help="verify screenshot + input, no model needed")
     args = parser.parse_args()
-
-    if args.display in (":0", ":1") and not args.allow_real_display:
-        sys.exit(f"refusing to drive {args.display} (the real session); "
-                 "use a nested display like Xephyr :2, "
-                 "or pass --allow-real-display")
 
     if not args.probe and not args.task:
         parser.error("a task is required unless --probe is given")
+
+    if args.sandbox_url and args.display is not None:
+        parser.error("--sandbox-url and --display are mutually exclusive")
+
+    if args.sandbox_url:
+        from remote import RemoteDesktop
+        desk = RemoteDesktop(
+            args.sandbox_url,
+            token=args.sandbox_token or "",
+            stream_url=args.stream_url,
+        )
+        print(f"remote sandbox: {args.sandbox_url}  "
+              f"({desk.width}x{desk.height})")
+        if desk.stream_url:
+            print(f"stream: {desk.stream_url}")
+        try:
+            run(args, desk=desk)
+        finally:
+            desk.close()
+        return
+
+    if (args.display is not None and _is_real_display(args.display)
+            and not args.allow_real_display):
+        sys.exit(f"refusing to drive {args.display} (the real session); "
+                 "use a nested display like Xephyr :2, "
+                 "or pass --allow-real-display")
 
     require_binaries(["scrot"] if args.display is not None
                      else ["Xephyr", "openbox", "scrot", "xterm"])
@@ -418,16 +572,21 @@ def main():
         run(args)
 
 
-def run(args):
-    desk = Desktop(args.display)
+def run(args, desk=None):
+    if desk is None:
+        desk = Desktop(args.display)
 
     if args.probe:
         probe(desk)
         return
 
+    backend_flag = getattr(args, "model_backend", "auto")
+    resolved = resolve_model_backend(
+        args.base_url, args.model, backend_flag)
     print(f"task: {args.task}")
     print(f"display {desk.name} ({desk.width}x{desk.height}), "
-          f"model {args.model} @ {args.base_url}, max {args.max_steps} steps")
+          f"model {args.model} @ {args.base_url}, backend {resolved}, "
+          f"max {args.max_steps} steps")
 
     history: list[str] = []
     prev_png: bytes | None = None
@@ -442,7 +601,8 @@ def run(args):
                                          args.model, args.task, png, history,
                                          (desk.width, desk.height),
                                          prev_png=prev_png,
-                                         complaint=complaint)
+                                         complaint=complaint,
+                                         backend=backend_flag)
                     break
                 except (httpx.HTTPError, ValueError) as e:
                     complaint = str(e)
@@ -468,7 +628,8 @@ def run(args):
             result = execute(desk, action)
             time.sleep(0.8)  # let the UI settle before the next screenshot
             after = desk.screenshot_png()
-            changed = "screen changed" if after != png else "screen did NOT change"
+            changed = ("screen changed" if after != png
+                       else "screen did NOT change")
             history.append(f"step {step}: {result} -> {changed}")
             prev_png = png
 

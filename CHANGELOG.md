@@ -1,21 +1,52 @@
 # Changelog
 
-## Unreleased
+## 0.0.1 (2026-07-25)
 
-- Preflight check for required system binaries with an exact install hint,
-  instead of failing mid-environment-spawn.
+First public MVP of the **desktop-use-hosted** control plane.
 
-## 0.0.1 (2026-07-24)
+### Dual model backends
 
-First public release.
+- `model_backends.py`: detect `generic` vs `holo` (`--model-backend auto|generic|holo`,
+  env `MODEL_BACKEND` / `DESKTOP_USE_MODEL_BACKEND`).
+- Holo: top-level `structured_outputs` + thinking fields, no prefill, temp 0.8,
+  parse `{note, thought, tool_call}`, scale `[0,1000]`→pixels before execute.
+- Generic: absolute pixels, optional JSON prefill (Claude 5 skip policy),
+  OpenRouter low reasoning effort when the base URL contains `openrouter`.
+- CLI/UI accept `HAI_API_KEY` when `OPENAI_API_KEY` is unset.
+- Unit tests in `tests/test_model_backends.py`.
 
-- Agent loop (`agent.py`): screenshot to XTest action via any OpenAI-compatible
-  vision endpoint; before/after screenshots, corrective retries, JSON prefill,
-  `click_type` compound action, fuzzy repeat guard, managed Xephyr environment
-  with automatic teardown, real-display refusal rail.
-- Console (`ui.py`): session model persisted to plain files (meta, seq-numbered
-  event log, per-step screenshots), sessions home with launcher and status
-  badges, live noVNC desktop view, snapshot timeline with scrubber, streaming
-  SSE transcript with reconnect dedupe, step-boundary interrupt contract shared
-  by stop, take-control (pause / resume-or-stop with context note) and
-  mid-flight user messages, light/dark theming.
+### Remote sandbox control plane
+
+- `--sandbox-url`, `--stream-url`, `--sandbox-token` on `agent.py` and `ui.py`
+  (env aliases `SANDBOX_URL`, `STREAM_URL`, `SANDBOX_TOKEN` and `DESKTOP_*`).
+- `remote.py` / `RemoteDesktop`: health, screenshot, action over HTTP.
+- Console injects remote noVNC URL only in sandbox mode; local Xephyr path unchanged.
+- Multi-instance: one agent per host-mapped sandbox/stream ports.
+
+### Safety and robustness
+
+- Refuse real displays including `:0.0` / `:1.1` (not only exact `:0`/`:1`).
+- Reject model `spawn` and other non-agent action types before sandbox POST.
+- Session shot/meta and noVNC static paths: reject `..`, absolute paths, and
+  escape outside their roots.
+- Stream inject uses a single `__STREAM_URL__` value token and a
+  `startsWith('__')` guard so injection cannot make the placeholder check
+  self-defeating.
+- Non-JSON model API error bodies surface as `ValueError` for corrective retries.
+- Preflight check for required system binaries with an install hint.
+
+### Console and agent loop (inherited / carried forward)
+
+- Agent loop: screenshot to action via OpenAI-compatible vision endpoints;
+  before/after screenshots, corrective retries, `click_type`, fuzzy repeat
+  guard, managed Xephyr environment with automatic teardown.
+- Console: session store (meta, seq-numbered `events.jsonl`, per-step PNGs),
+  sessions home, live noVNC, snapshot timeline, SSE transcript with reconnect
+  dedupe, step-boundary interrupt contract (stop, take-control, mid-flight
+  messages), light/dark theming.
+
+### Tests and evals
+
+- `tests/` unit suite (remote client, stream inject, prefill/spawn/display,
+  dual backends, CLI flags).
+- Optional live smoke: `evals/remote_smoke.py`, `evals/hosted_e2e.py`.

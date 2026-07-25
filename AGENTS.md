@@ -4,37 +4,54 @@ Guidance for coding agents (and humans in a hurry) working on this repository.
 
 ## What this project is
 
-`desktop-use` is a self-hosted computer-use agent: a vision-language model
-drives a nested Linux desktop (Xephyr) through screenshots and synthetic XTest
+`desktop-use-hosted` is the **control plane** for a computer-use stack: a
+vision-language model drives a desktop through screenshots and synthetic
 input, wrapped in a web operator console with live VNC view, streaming
 transcript, snapshot replay and mid-flight human intervention.
 
-The project's prime directive: **the whole loop stays readable in one
-sitting**. Two Python files, two HTML files, no framework, no build step.
-Resist any change that breaks that.
+Two desktop backends:
+
+1. **Local** (default): nested Xephyr + openbox + scrot + XTest (same shape as
+   upstream [desktop-use](https://github.com/arthurkatcher/desktop-use)).
+2. **Remote sandbox** (`--sandbox-url`): HTTP Desktop API + optional
+   `--stream-url` for noVNC. No Xephyr spawn on the control plane. Pairs with
+   [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox).
+
+The prime directive still holds: **the whole loop stays readable in one
+sitting**. No framework, no build step. Resist any change that breaks that.
 
 ## File map
 
 | File | Role |
 |---|---|
-| `agent.py` | The agent brain and CLI. `Desktop` (scrot capture + XTest input via python-xlib), `ManagedEnv` (Xephyr + openbox lifecycle with teardown), `ask_model` (prompt build, JSON prefill, parsing, shape validation), `execute` (action dispatch), `run` (the CLI ReAct loop). |
-| `ui.py` | The console server. `SessionStore` (one directory per session: meta.json, seq-numbered events.jsonl, step PNGs), `Bus` (SSE fan-out), `Runner` (the session loop thread: interrupts, repeat guard, message drain), HTTP handler (REST + SSE + static). Spawns x11vnc and websockify. |
-| `ui.html` | Per-session console page. Vanilla JS, no dependencies. Transcript rendering, noVNC canvas, snapshot timeline, stop/control/message UI, theming. |
+| `agent.py` | The agent brain and CLI. `Desktop` (scrot + XTest), `ManagedEnv` (Xephyr lifecycle), `ask_model`, `execute` (local methods or `RemoteDesktop.execute`), `run`. |
+| `model_backends.py` | Dual profile helpers: resolve generic vs Holo, scale `[0,1000]`→pixels, tool map, request bodies, normalize to `{reasoning, action}`. |
+| `remote.py` | `RemoteDesktop`: health / screenshot / action over httpx against a sandbox API. |
+| `ui.py` | Console server. Local mode spawns Xephyr + x11vnc + websockify; remote mode uses `RemoteDesktop` and injects `__STREAM_URL__` only when `--sandbox-url` is set. |
+| `ui.html` | Per-session console. noVNC uses injected remote URL when not still `__…__`, else local `__WS_PORT__`. |
 | `home.html` | Sessions list + launcher page. |
-| `sessions/` | Runtime data, gitignored. Never commit it: it contains screen recordings of the local machine. |
+| `tests/` | Unit tests (mock httpx for `RemoteDesktop`; dual-backend coverage). |
+| `evals/remote_smoke.py` | Live smoke against `SANDBOX_URL` if set. |
+| `sessions/` | Runtime data, gitignored. |
 
 ## Commands
 
 ```bash
-uv run agent.py --probe          # capture + input pipeline check, no model needed
-uv run agent.py "task..."        # headless CLI run (spawns and tears down its own display)
-uv run ui.py --base-url ... --model ...   # full console at http://localhost:7788
+uv run agent.py --probe          # local capture + input pipeline check
+uv run agent.py "task..."        # headless CLI (spawns private Xephyr)
+uv run ui.py --base-url ... --model ...   # local console http://127.0.0.1:7788
+
+# remote sandbox (desktop-sandbox data plane on :7090 / :6080)
+uv run agent.py --sandbox-url http://127.0.0.1:7090 --probe
+uv run ui.py --sandbox-url http://127.0.0.1:7090 \
+  --stream-url ws://127.0.0.1:6080 --base-url ... --model ...
+
+uv run --with pytest --with httpx --with python-xlib python -m pytest tests/ -v
+SANDBOX_URL=http://127.0.0.1:7090 uv run evals/remote_smoke.py
 ```
 
-There is no test suite yet. Verification is live: run `--probe`, then at least
-one real session through the console and one through the CLI before claiming a
-change works. The failure modes here (focus, timing, coordinate drift, model
-formatting slips) do not show up in static reading of the code.
+Verification: unit tests for backends and remote client; live `--probe` (local
+or remote); at least one real console session before claiming a change works.
 
 ## Invariants you must not break
 
@@ -48,18 +65,20 @@ formatting slips) do not show up in static reading of the code.
    Transient bus-only events (no `seq`) are allowed only for cosmetic
    immediate feedback and must have a persisted counterpart if they carry
    state (see `message_sent` vs `user_message`).
-3. **The desktop is isolated.** Never weaken the refusal to drive `:0`/`:1`,
-   and keep `WAYLAND_DISPLAY` scrubbed from everything spawned inside the
-   session, or apps escape onto the user's real desktop.
-4. **Dependency budget.** Runtime Python deps are `httpx` and `python-xlib`,
-   declared in the script headers. The frontend is dependency-free vanilla JS
-   (noVNC is served from the system package). New dependencies need a strong
-   written case.
-5. **Model-agnosticism.** Everything model-facing goes through the
-   OpenAI-compatible chat completions shape. Parsing must tolerate backends
-   that honor assistant prefill and backends that ignore it. Do not hardcode
-   provider-specific behavior outside the existing OpenRouter reasoning-effort
-   branch.
+3. **The desktop is isolated.** Never weaken the refusal to drive `:0`/`:1`
+   on the local path, and keep `WAYLAND_DISPLAY` scrubbed from everything
+   spawned inside a local session. Remote mode must not spawn Xephyr or
+   touch the control-plane display.
+4. **Dependency budget.** Runtime Python deps are `httpx` and `python-xlib`
+   (xlib only needed for local Desktop). Frontend stays dependency-free
+   vanilla JS. New dependencies need a strong written case.
+5. **Model-agnosticism / dual backend.** Everything model-facing goes through
+   the OpenAI-compatible chat completions shape. **Generic** (default): absolute
+   pixels, optional prefill, OpenRouter `reasoning` only if `openrouter` is in
+   the base URL. **Holo**: no prefill, top-level `structured_outputs` + thinking
+   fields, parse `{note,thought,tool_call}`, scale coords on the control plane
+   before execute. Do not inject Holo fields on the generic path, and never
+   send nested `"extra_body"` for Holo extras.
 
 ## Agent-loop lore (learned from real failures, do not regress)
 
@@ -73,7 +92,8 @@ formatting slips) do not show up in static reading of the code.
 - Text fields look identical focused and unfocused in screenshots; that is why
   `click_type` exists and why the prompt forbids double-clicking inputs.
 - The JSON prefill (`{"role": "assistant", "content": "{"}`) is what stops
-  tool-use-trained models from emitting tool-call syntax on turn 1.
+  tool-use-trained models from emitting tool-call syntax on turn 1 (generic
+  path only; Holo disables prefill).
 
 ## Style
 

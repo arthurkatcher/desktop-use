@@ -1,170 +1,372 @@
-# desktop-use
+# desktop-use-hosted
 
-**A self-hosted computer-use agent with a mission-control web console. One desktop, one loop, zero cloud runtime.**
+**Control plane for computer-use: a readable agent loop, an operator console, and optional remote Desktop API sandboxes.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-1b232d.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-1b232d.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.0.1-ffb454.svg)](https://github.com/arthurkatcher/desktop-use/releases)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-63b981.svg)](CONTRIBUTING.md)
+[![Status](https://img.shields.io/badge/status-MVP-ffb454.svg)](#status)
+[![Version](https://img.shields.io/badge/version-0.0.1-63b981.svg)](CHANGELOG.md)
 
-`desktop-use` re-implements the classic vision-agent runtime loop (screenshot, vision-language model, synthetic input) as two small readable Python files, and wraps it in a real-time operator console: live VNC view of the agent's desktop, streaming reasoning transcript, per-step snapshot replay, and three ways to intervene mid-flight without killing the run.
+`desktop-use-hosted` is the **control plane** of a split computer-use stack. A vision-language model decides actions; this repo runs the model loop, the web operator console, and either a local nested desktop or a remote [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) data plane.
 
-It talks to **any OpenAI-compatible vision model endpoint**: OpenRouter, Ollama, vLLM, llama.cpp, LM Studio. No vendor runtime, no closed binaries, no telemetry.
+It is the hosted / screen-link evolution of the local-only [desktop-use](https://github.com/arthurkatcher/desktop-use) reference: same interrupt contract, same append-only sessions, dual model backends (Holo structured harness and generic OpenAI-compatible VLMs).
 
 ```text
- ┌────────────────────────────────────────────────────────────────────┐
- │  Browser console (localhost:7788)                                  │
- │  ┌──────────────────┐   ┌───────────────────────────────────────┐  │
- │  │ streaming         │   │ live desktop (noVNC canvas)           │  │
- │  │ reasoning         │   │ or per-step snapshot replay           │  │
- │  │ transcript (SSE)  │   │ [LIVE | SNAPSHOTS]  ‹ ● ● ● ● ›       │  │
- │  └──────────────────┘   └───────────────────────────────────────┘  │
- └───────────▲──────────────────────────▲─────────────────────────────┘
-             │ SSE / REST               │ websocket (websockify)
- ┌───────────┴──────────┐   ┌───────────┴───────────┐
- │  ui.py               │   │  x11vnc               │
- │  sessions, events,   │   │                       │
- │  runner thread       │   │                       │
- └───────────▲──────────┘   └───────────▲───────────┘
-             │ scrot + XTest (python-xlib)
- ┌───────────┴──────────────────────────┴───────────┐
- │  Xephyr :2  (nested X display, openbox)          │
- │  the agent's private desktop, isolated from      │
- │  your real session                               │
- └──────────────────────────────────────────────────┘
-             ▲
-             │ base64 PNG + JSON actions
- ┌───────────┴──────────────────────────────────────┐
- │  any OpenAI-compatible vision model              │
- │  OpenRouter / Ollama / vLLM / llama.cpp          │
- └──────────────────────────────────────────────────┘
+  Operator browser (127.0.0.1:7788)
+        │ REST + SSE transcript          │ noVNC (local ws or remote stream)
+        ▼                                ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  desktop-use-hosted (this repo)                         │
+  │  ui.py console · agent.py loop · model_backends.py      │
+  │  sessions/ (events.jsonl + step PNGs)                   │
+  └───────────────┬───────────────────────────┬─────────────┘
+                  │                           │
+     local path   │                           │  remote path
+     scrot+XTest  │                           │  remote.py HTTP
+                  ▼                           ▼
+         Xephyr + openbox              desktop-sandbox
+         x11vnc + websockify           GET /health /screenshot
+                                       POST /action · stream_ws
+                  │                           │
+                  └─────────────┬─────────────┘
+                                │ chat/completions (+ images)
+                    ┌───────────┴────────────┐
+                    │  Model backends        │
+                    │  holo  ·  generic      │
+                    └────────────────────────┘
 ```
+
+## Table of contents
+
+- [Why](#why)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Related projects](#related-projects)
+- [Dual model backends](#dual-model-backends)
+- [Quick start](#quick-start)
+  - [A. Docker sandbox (recommended)](#a-docker-sandbox-recommended)
+  - [B. Hosted CLI and console against a sandbox URL](#b-hosted-cli-and-console-against-a-sandbox-url)
+  - [C. Local Xephyr only (no sandbox)](#c-local-xephyr-only-no-sandbox)
+- [Operator console](#operator-console)
+- [Configuration](#configuration)
+- [What works (tested models)](#what-works-tested-models)
+- [Security](#security)
+- [Limitations and roadmap](#limitations-and-roadmap)
+- [Development and tests](#development-and-tests)
+- [HTTP API](#http-api)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+- [Status](#status)
 
 ## Why
 
-Cloud computer-use agents are black boxes: closed runtimes, opaque loops, screenshots you never see again. `desktop-use` is the opposite. The whole agent brain is ~400 lines you can read in one sitting, every step of every run is persisted to plain files on your disk, and the model behind it is whatever endpoint you point it at. It exists to make the loop itself inspectable, hackable and debuggable.
+Cloud computer-use products hide the loop: closed runtimes, opaque decisions, screenshots you never see again. This stack keeps the opposite posture.
+
+- The agent brain stays small and readable (`agent.py`, `model_backends.py`, `remote.py`, `ui.py`).
+- Every step is append-only on disk under `sessions/` (meta, `events.jsonl`, PNGs).
+- The data plane ([desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox)) can run in Docker while the control plane and API keys stay on your machine.
+- Model choice is yours: H Company Holo Models API or any OpenAI-compatible vision endpoint.
 
 ## Features
 
-### The agent loop (`agent.py`)
-- **Screenshot to action**: captures the nested display with `scrot`, sends the PNG plus task and history to the model, parses one JSON action, injects it with XTest via pure `python-xlib`. No xdotool, no system automation daemons.
-- **Action space**: `click`, `double_click`, `right_click`, `move`, `type`, `key` (combos like `ctrl+l`), `click_type` (click a field and type in one step), `scroll`, `wait`, `done`.
-- **Before/after vision**: each turn the model receives the previous screenshot alongside the current one, so it can see what its own last action actually did (including "I just closed my own window").
-- **Corrective retries**: a malformed or wrong-shape reply is fed back to the model with the parse error. At temperature 0 a blind retry reproduces the identical bad output; a corrective one fixes it.
-- **JSON prefill**: the request ends with an assistant message containing `{`, which forces the reply to continue as JSON and stops tool-call-syntax slips at the source. Parsing handles backends that honor prefill and backends that ignore it.
-- **Anti-loop guards**: fuzzy repeat detection (same action type within a few pixels counts as a repeat) injects an explicit "this is not working, change strategy" note; a screen-changed flag after every action tells the model whether its click did anything.
-- **Safety rails**: refuses to drive `:0`/`:1` (your real session) unless explicitly overridden; the managed environment scrubs `WAYLAND_DISPLAY` so apps launched inside the session cannot escape to your real desktop.
+### Agent loop (`agent.py` + `model_backends.py`)
 
-### The console (`ui.py` + `home.html` + `ui.html`)
-- **Sessions home**: every run is a session with status badge (RUNNING / COMPLETE / STOPPED / INCOMPLETE / ERROR), final-screen thumbnail, model, step count, duration and age. Launch new sessions from a prompt box. One session runs at a time; the page links you to the active one.
-- **Live view**: real VNC streaming of the agent's desktop (x11vnc + websockify + noVNC), not screenshot polling. An amber border flash marks every physical action.
-- **Snapshot replay**: one PNG per step, browsable through a capped timeline scrubber with arrow buttons and keyboard navigation. Clicking a step card shows its snapshot and vice versa. Finished sessions open directly in replay mode.
-- **Streaming transcript**: reasoning, the action as a terminal-style command line, per-step model latency, and the outcome (screen changed / no change / not executed) stream in over SSE with reconnect dedupe.
-- **Interaction triad**, all on one boundary contract (an in-flight decision is discarded and marked "not executed", never half-applied):
-  - **Stop**: signal now, halts at the step boundary, pending action never runs.
-  - **Take control**: confirm dialog, agent pauses, you drive the desktop through the browser canvas; on release you choose "continue task" (the agent gets a context note that a human intervened and re-reads the screen) or "stop session".
-  - **Mid-flight messages**: type an instruction while the agent works; it is injected into the agent's context at the boundary with precedence over earlier plans, and the agent adapts. Messages are part of the persisted session record.
-- **Light and dark themes**: follows your OS preference by default, explicit toggle persists and wins, no flash on load.
-- **Flat, line-based UI**: IBM Plex, operator-console aesthetic, no decorative shadows.
+- **Screenshot to action**: capture a desktop frame, send PNG plus task and history to the model, parse one action, apply it (local XTest or remote HTTP).
+- **Action space**: `click`, `double_click`, `right_click`, `move`, `type`, `key` (combos like `ctrl+l`), `click_type`, `scroll`, `wait`, `done`. Sandbox-only types such as `spawn` are never accepted on the agent path.
+- **Before/after vision**: each turn includes the previous screenshot and the current one so the model can see what its last action did.
+- **Dual backends**: **holo** (structured outputs, coordinates in `[0,1000]` scaled to pixels on the control plane) and **generic** (OpenAI-compat free-form JSON, absolute pixels, optional assistant prefill).
+- **Corrective retries**: malformed or wrong-shape replies are fed back with the parse error (blind retries at temperature 0 reproduce the same mistake).
+- **Anti-loop guards**: fuzzy coordinate repeat detection; screen-changed feedback after each action.
+- **Interrupt contract**: stop, take-control, and mid-flight messages all discard an in-flight model decision at the step boundary (`skipped` / not executed), never half-applied.
+
+### Operator console (`ui.py` + `home.html` + `ui.html`)
+
+- Sessions home with status badges, thumbnails, model, step count, duration.
+- Live noVNC of the agent desktop (local stack or remote `--stream-url`).
+- Snapshot timeline: one PNG per step with scrubber and keyboard navigation.
+- Streaming transcript over SSE with reconnect dedupe on monotonic `seq`.
+- Stop, take control / release, mid-flight messages; light and dark themes.
+
+### Remote sandbox (`remote.py`)
+
+- `--sandbox-url` drives a Desktop API: `GET /health`, `GET /screenshot`, `POST /action`.
+- Optional `--sandbox-token` (`Authorization: Bearer` and `X-Sandbox-Token`).
+- Optional `--stream-url` for noVNC; when omitted, health `stream_ws` is used if present.
+- Control plane does **not** spawn Xephyr, x11vnc, or websockify in remote mode.
+- Multi-instance parallel isolation: one agent process per sandbox URL/ports.
 
 ### Persistence
-Every session is a plain directory you can grep, diff and archive:
 
 ```text
-sessions/20260724-182747/
+sessions/<id>/
 ├── meta.json      # id, task, model, status, started, ended, steps
-├── events.jsonl   # append-only, seq-numbered event log (the source of truth)
+├── events.jsonl   # append-only, seq-numbered (source of truth)
 ├── 1.png … N.png  # one screenshot per step
-└── final.png      # the screen at completion
+└── final.png      # screen at completion
 ```
 
-Replays are reconstructed entirely from these files, so history survives server restarts. No database.
+No database. Replays rebuild from these files alone.
 
-## Requirements
+## Architecture
 
-Python-side there is nothing to install: [`uv`](https://docs.astral.sh/uv/) resolves the two script dependencies (`httpx`, `python-xlib`) automatically from the file headers on first run. The code also spawns and tears down the whole desktop environment (Xephyr, openbox, x11vnc, websockify) by itself. You only need the system binaries present:
+| Layer | Responsibility | Repo |
+|---|---|---|
+| Control plane | Model loop, operator console, session store, coord scale | **this repo** |
+| Data plane | Isolated desktop, screenshot/action API, optional noVNC | [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) |
+| Model host | Vision LLM inference | Your endpoint (Holo API, OpenRouter, Ollama, vLLM, …) |
+
+Local mode keeps Xephyr on the same host as the console (same shape as upstream desktop-use). Remote mode is the production-shaped path: sandbox in Docker, control plane on the operator machine.
+
+## Related projects
+
+| Project | Role |
+|---|---|
+| **[desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox)** | Data plane companion. Docker-first nested desktop with HTTP Desktop API and noVNC. **Pair this control plane with that repo.** |
+| [desktop-use](https://github.com/arthurkatcher/desktop-use) | Original local-only reference (Xephyr on the operator machine, no remote API). |
+
+## Dual model backends
+
+Everything model-facing uses the OpenAI-compatible `POST /v1/chat/completions` shape. Two harness profiles live in `model_backends.py`:
+
+| | **holo** | **generic** |
+|---|---|---|
+| **When** | H Company Models API (`api.hcompany.ai`) or known Holo3 model ids | OpenRouter, Claude, Ollama, vLLM, most VLMs (default) |
+| **Selection** | `--model-backend auto` (default) or `holo` | `auto` or `generic` |
+| **Auto heuristics** | Base URL contains `hcompany.ai` / `api.hcompany`, or model id starts with `holo3` / `hcompany/holo` | Everything else |
+| **Coordinates** | Model uses `[0,1000]`; control plane scales to pixels before execute | Absolute pixels |
+| **Output shape** | `{note, thought, tool_call}` via top-level `structured_outputs` | Free-form `{reasoning, action}` |
+| **Prefill** | Off | On (with Claude 5 skip policy) |
+| **Temperature** | 0.8 | 0 |
+| **Thinking** | `chat_template_kwargs` + `reasoning_effort` | OpenRouter low reasoning only when URL contains `openrouter` |
+
+Override with `--model-backend auto|holo|generic` or env `MODEL_BACKEND` / `DESKTOP_USE_MODEL_BACKEND`. Self-hosted Holo1.x weights on vLLM stay **generic** unless you force `--model-backend holo`.
+
+Holo extras (`structured_outputs`, thinking fields) are sent as **top-level** request body keys. Do not nest them under `"extra_body"`; many gateways ignore that nesting.
+
+### Holo Models API notes
 
 ```bash
-# Debian / Ubuntu (tested)
+export HAI_API_KEY="…"                 # portal.hcompany.ai Models API key
+export OPENAI_API_KEY="$HAI_API_KEY"   # optional; CLI falls back to HAI_API_KEY
+export OPENAI_BASE_URL="https://api.hcompany.ai/v1"
+```
+
+| Item | Value |
+|---|---|
+| Models | `holo3-1-35b-a3b` (fast), `holo3-122b-a10b` (larger) |
+| Auth | Bearer (`HAI_API_KEY` or `OPENAI_API_KEY`) |
+| Coords | scaled with `int(x/1000*W)` and clamped on the control plane |
+| Sandbox | always receives **pixel** actions only |
+
+## Quick start
+
+Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/). Prefer **path A** for real work.
+
+### A. Docker sandbox (recommended)
+
+1. Run a [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) instance (see that repo’s README; default API `http://127.0.0.1:7090`, stream often `ws://127.0.0.1:6080`).
+2. Clone and point this control plane at it.
+
+```bash
+git clone https://github.com/arthurkatcher/desktop-use-hosted.git
+cd desktop-use-hosted
+
+export SANDBOX_URL=http://127.0.0.1:7090
+export STREAM_URL=ws://127.0.0.1:6080/websockify   # required if host maps a non-default stream port
+# export SANDBOX_TOKEN=…                           # if the sandbox requires auth
+
+# Probe capture + input against the sandbox (no model)
+uv run agent.py --sandbox-url "$SANDBOX_URL" --probe
+```
+
+### B. Hosted CLI and console against a sandbox URL
+
+Use env vars for secrets. Prefer not to put API keys on the command line.
+
+**Generic (OpenRouter example):**
+
+```bash
+export OPENAI_API_KEY="…"
+export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+export SANDBOX_URL=http://127.0.0.1:7090
+export STREAM_URL=ws://127.0.0.1:6080/websockify
+
+uv run agent.py --sandbox-url "$SANDBOX_URL" \
+  --base-url "$OPENAI_BASE_URL" \
+  --model anthropic/claude-sonnet-4.5 \
+  --model-backend generic \
+  --max-steps 25 \
+  "Open a terminal and run uname -a"
+
+uv run ui.py \
+  --sandbox-url "$SANDBOX_URL" \
+  --stream-url "$STREAM_URL" \
+  --base-url "$OPENAI_BASE_URL" \
+  --model anthropic/claude-sonnet-4.5 \
+  --model-backend generic \
+  --max-steps 25
+# open http://127.0.0.1:7788
+```
+
+**Holo:**
+
+```bash
+export HAI_API_KEY="…"
+export OPENAI_API_KEY="$HAI_API_KEY"
+export OPENAI_BASE_URL="https://api.hcompany.ai/v1"
+export SANDBOX_URL=http://127.0.0.1:7090
+export STREAM_URL=ws://127.0.0.1:6080/websockify
+
+uv run agent.py --sandbox-url "$SANDBOX_URL" \
+  --base-url "$OPENAI_BASE_URL" \
+  --model holo3-1-35b-a3b \
+  --model-backend auto \
+  "Open a terminal and run echo hi"
+
+uv run ui.py \
+  --sandbox-url "$SANDBOX_URL" \
+  --stream-url "$STREAM_URL" \
+  --base-url "$OPENAI_BASE_URL" \
+  --model holo3-1-35b-a3b \
+  --model-backend auto \
+  --max-steps 25 --port 7788
+```
+
+**Multi-sandbox (parallel isolation):** one agent per instance. Do not point two agents at the same `SANDBOX_URL`.
+
+| Instance | `SANDBOX_URL` | `STREAM_URL` | Console `--port` |
+|---|---|---|---|
+| 0 | `http://127.0.0.1:7090` | `ws://127.0.0.1:6080` | `7788` |
+| 1 | `http://127.0.0.1:7091` | `ws://127.0.0.1:6081` | `7789` |
+
+Health JSON may still advertise container-internal ports. When the host maps a different stream port, set `STREAM_URL` / `--stream-url` to the host-mapped URL.
+
+### C. Local Xephyr only (no sandbox)
+
+Same path as upstream desktop-use. System packages on Debian/Ubuntu:
+
+```bash
 sudo apt install xserver-xephyr openbox scrot xterm x11vnc novnc websockify
-
-# uv, if you do not have it yet
-curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Approximate package names elsewhere (untested): Fedora `xorg-x11-server-Xephyr openbox scrot xterm x11vnc novnc python3-websockify`, Arch `xorg-server-xephyr openbox scrot xterm x11vnc novnc python-websockify`.
-
-Notes:
-
-- Wayland hosts are fine: the agent runs in a nested X server, and the code scrubs the Wayland environment so nothing escapes to your real desktop.
-- `xterm` and the browser are what the agent actually drives; the bundled openbox menu expects a terminal to exist.
-- The headless CLI (`agent.py`) needs only `xserver-xephyr openbox scrot xterm`; the VNC trio is for the console's live view.
-- A vision-capable model endpoint is required (see [Model backends](#model-backends)).
-
-## Quickstart
-
 ```bash
-git clone https://github.com/arthurkatcher/desktop-use.git
-cd desktop-use
+uv run agent.py --probe
+uv run agent.py "open a terminal and run ls"
 
-# console with OpenRouter (recommended model: claude-haiku-4.5)
-OPENAI_API_KEY=sk-or-... uv run ui.py \
+export OPENAI_API_KEY="…"
+uv run ui.py \
   --base-url https://openrouter.ai/api/v1 \
   --model anthropic/claude-haiku-4.5 \
   --max-steps 25
-# open http://localhost:7788, type a task, press LAUNCH SESSION
+# open http://127.0.0.1:7788
 ```
 
-Everything (the nested display, VNC stack and web server) starts together and tears down together on Ctrl+C.
+The headless CLI needs Xephyr, openbox, scrot, xterm. The VNC trio is only for local console live view.
 
-### Local model instead
+## Operator console
 
-```bash
-ollama pull qwen2.5vl && ollama serve   # or vLLM / llama.cpp serving any VLM
-uv run ui.py --model qwen2.5vl          # defaults to http://localhost:11434/v1
-```
-
-### Headless CLI (no console)
-
-```bash
-uv run agent.py --probe                          # verify capture + input, no model needed
-uv run agent.py "open a terminal and run ls"     # spawns and tears down its own display
-uv run agent.py --display :2 "..."               # attach to an existing display instead
-```
-
-## Driving the console
+Binds **127.0.0.1** only. There is **no console login**. This is a single-operator MVP, not multi-tenant SaaS.
 
 | Control | Where | What it does |
 |---|---|---|
 | LAUNCH SESSION | home | starts a run and opens its session page |
 | STOP | session header | halts at the next step boundary; pending action never runs |
-| LIVE / SNAPSHOTS | control deck | switch between the real-time canvas and step replay |
-| ‹ › and arrow keys | control deck | step through snapshots; dots are capped at ~15 wide and scroll |
-| TAKE CONTROL | control deck | pause the agent and drive the desktop yourself (confirm dialog) |
-| RELEASE CONTROL | control deck | choose: continue the task, or stop the session |
-| message bar | under transcript | send the agent a mid-task instruction |
-| ◐ | header | toggle light/dark theme |
-| ⌃↵ | prompt box | launch from the keyboard |
+| LIVE / SNAPSHOTS | control deck | real-time canvas vs step replay |
+| ‹ › and arrow keys | control deck | step through snapshots |
+| TAKE CONTROL | control deck | pause the agent; drive the desktop yourself |
+| RELEASE CONTROL | control deck | continue the task, or stop the session |
+| message bar | under transcript | mid-flight instruction into agent context |
+| ◐ | header | light/dark theme |
 
-Sessions that are not the active one open in snapshot replay with LIVE and TAKE CONTROL disabled, because the single desktop belongs to whichever session is running.
+One session runs at a time on a given console process. Non-active sessions open in snapshot replay with LIVE and TAKE CONTROL disabled.
 
-## Model backends
+## Configuration
 
-Any endpoint that speaks `POST /v1/chat/completions` with image input works. Findings from real runs:
+| Flag | Environment | Purpose |
+|---|---|---|
+| `--base-url` | `OPENAI_BASE_URL` | Chat completions base (default `http://localhost:11434/v1`) |
+| `--model` | `LOCAL_LOOP_MODEL` | Model id |
+| `--api-key` | `OPENAI_API_KEY` or `HAI_API_KEY` | Bearer token for the model host (prefer env) |
+| `--model-backend` | `MODEL_BACKEND` / `DESKTOP_USE_MODEL_BACKEND` | `auto` \| `generic` \| `holo` |
+| `--max-steps` | | Cap agent steps (default 15) |
+| `--sandbox-url` | `SANDBOX_URL` / `DESKTOP_SANDBOX_URL` | Desktop API base |
+| `--stream-url` | `STREAM_URL` / `DESKTOP_STREAM_URL` | Full websocket URL for noVNC |
+| `--sandbox-token` | `SANDBOX_TOKEN` / `DESKTOP_SANDBOX_TOKEN` | Sandbox auth headers |
+| `--port` | | Console HTTP port (default 7788, ui.py only) |
+| `--vnc-port` / `--ws-port` | | Local VNC stack ports (local mode only) |
+| `--display` | | Attach local path to existing X display (agent.py) |
+| `--allow-real-display` | | Permit local drive of `:0`/`:1` (unsafe; default refuse) |
+| `--probe` | | Screenshot + input check without a model |
 
-| Model | Verdict |
+Runtime Python deps (from script headers): `httpx`, `python-xlib` (xlib needed for local Desktop only).
+
+## What works (tested models)
+
+Live end-to-end runs against a Docker desktop-sandbox (honest summary):
+
+| Model | Backend | Result |
+|---|---|---|
+| `holo3-1-35b-a3b` (Holo Models API) | holo | **PASS** (terminal + browser grounding tasks) |
+| `holo3-122b-a10b` (Holo Models API) | holo | **PASS** path proven (sensitive to dirty desktop residue between runs) |
+| `anthropic/claude-sonnet-5` via OpenRouter | generic | **PASS** |
+| Multi-instance Holo (two sandboxes in parallel) | holo | **Isolation holds** (separate ports, no cross-desktop input) |
+| Mistral medium-class via generic OpenAI-compat | generic | **FAIL on UI grounding** in our runs (menu loops / missed targets). Do not assume every vision model works. |
+
+Other notes from generic-path experience:
+
+| Model | Notes |
 |---|---|
-| `anthropic/claude-haiku-4.5` (OpenRouter) | recommended: precise UI grounding, fast, cheap |
-| Claude Sonnet tiers | stronger reasoning when tasks get long |
-| Gemini Flash tiers | poor pixel grounding in our testing (missed 20px targets by ~100px); mandatory hidden reasoning eats the token budget |
-| `qwen2.5vl` (Ollama) | workable fully-local option |
-| Holo1.5 open weights (vLLM) | purpose-built UI grounding, good local choice |
+| `anthropic/claude-haiku-4.5` (OpenRouter) | Strong cheap default for many UI tasks |
+| Gemini Flash tiers | Poor pixel grounding in earlier testing; hidden reasoning can starve JSON budget |
+| `qwen2.5vl` (Ollama) | Workable fully local option |
+| Self-hosted Holo1.5 weights | Use **generic** profile unless the host implements Holo structured extras |
 
-For OpenRouter the client automatically requests low reasoning effort so hidden thinking does not starve the JSON output.
+Unit tests cover backend detection, coord scale, tool map, request bodies, remote client, stream inject, and CLI routing. They do not replace live UI grounding checks.
+
+## Security
+
+MVP threat model: **single operator on localhost**. Highlights:
+
+- Console binds `127.0.0.1`; **no authentication**.
+- API keys via environment variables preferred over argv.
+- Sandbox token when the data plane requires it; noVNC stream exposure is a data-plane concern (see sandbox SECURITY).
+- Local path refuses real displays `:0`/`:1` unless overridden; remote path never spawns Xephyr on the control plane.
+- `sessions/` holds screen recordings. Treat as sensitive; it is gitignored.
+
+Full policy: [SECURITY.md](SECURITY.md).
+
+## Limitations and roadmap
+
+**Current (v0.0.1 MVP)**
+
+- Not multi-tenant SaaS: one operator, localhost console, no login.
+- One active session per console process.
+- Holo multi-turn fidelity is Phase 1 (structured tool path + scale); richer observation history and caching are later work.
+- Model quality varies widely; grounding failures are model/site issues, not always control-plane bugs.
+
+**Phase 2 / 3 (brief)**
+
+- Multi-turn Holo fidelity (observation history, image budget discipline)
+- Prompt / image caching where providers support it
+- Multi-tenant and authenticated console (out of scope for MVP)
+- Parallel local sessions; model picker in the UI header; cost telemetry
+
+## Development and tests
+
+```bash
+# unit tests (no display, no API keys required)
+uv run --with pytest --with httpx --with python-xlib python -m pytest tests/ -v
+
+# optional live smoke against a running sandbox
+SANDBOX_URL=http://127.0.0.1:7090 uv run evals/remote_smoke.py
+```
+
+See [EVALS.md](EVALS.md) for hosted e2e helpers. See [CONTRIBUTING.md](CONTRIBUTING.md) for PR norms and dual-backend test expectations.
+
+Data-plane changes belong in [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox), not this repo.
 
 ## HTTP API
-
-The console is a plain REST + SSE surface you can script against:
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -174,29 +376,29 @@ The console is a plain REST + SSE surface you can script against:
 | POST | `/run` `{"task": "..."}` | launch a session (409 if one is running) |
 | POST | `/stop` | request stop at the next boundary |
 | POST | `/message` `{"text": "..."}` | queue a mid-flight instruction |
-| POST | `/control/take` | pause the agent, user takes the desktop |
+| POST | `/control/take` | pause the agent; user takes the desktop |
 | POST | `/control/release` `{"continue": bool}` | hand back and resume, or stop |
 | GET | `/events?sid=<id>` | SSE stream: full replay then live tail |
 | GET | `/shot/<sid>/<n>.png` | any step screenshot |
 
 ## Troubleshooting
 
-- **x11vnc exits immediately on a Wayland host**: it refuses to start when `WAYLAND_DISPLAY` is set. `ui.py` already scrubs it; if you run x11vnc by hand, do `env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 x11vnc -display :2 ...`
-- **Apps open on your real desktop instead of the session**: something inherited your Wayland environment. Launch apps through the openbox menu inside the session (the managed env scrubs the variables), and give Chrome its own profile dir so your real Chrome instance does not capture the invocation.
-- **A run hangs silently**: check whether a previous display or VNC process is orphaned. Kill by exact pid; note that `pkill -f` with a pattern that appears in your own command line kills your shell (use a `[b]racket` pattern).
-- **The agent loops clicking the same spot**: usually a text field (focus is invisible in screenshots). The `click_type` action and the repeat guard exist for this; if you add actions, keep them atomic.
-- **Model replies fail to parse**: the corrective retry usually heals it within one attempt. If a backend consistently fails, check whether it honors assistant prefill and whether it supports image input at your resolution.
+- **Remote stream blank**: set `--stream-url` to the **host-mapped** websocket URL when Docker publishes a non-default port. Health may still show the container port.
+- **401 from sandbox**: set `SANDBOX_TOKEN` / `--sandbox-token` to match the data plane.
+- **x11vnc exits on Wayland (local mode)**: `ui.py` scrubs `WAYLAND_DISPLAY`; if you run x11vnc by hand, unset it.
+- **Apps open on the real desktop (local mode)**: something inherited Wayland env; launch via the session menu; give Chrome its own profile dir if needed.
+- **Agent loops on the same click**: often an unfocused text field (focus is invisible in screenshots). Prefer `click_type`; the repeat guard exists for this.
+- **Parse errors**: corrective retry usually fixes one-shot format slips. Confirm image input and backend profile (`holo` vs `generic`).
+- **Orphan displays / VNC**: kill by exact pid. Avoid `pkill -f` patterns that match your own shell command line.
 
-## Roadmap
+## Contributing
 
-- Parallel sessions (one nested display + VNC stack per session)
-- Visual diff highlights between consecutive snapshots
-- Token/cost telemetry per step in the gauge cluster
-- Model picker in the console header
-- Optional sqlite index over sessions for cross-session search and stats
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).
 
-## Contributing, security, license
+## License
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and pull request conventions
-- [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities
-- [MIT](LICENSE)
+[MIT](LICENSE)
+
+## Status
+
+**v0.0.1** MVP. Shippable control plane for single-operator use with Docker sandbox and dual model backends. Expect breaking refinements before 0.1.0.

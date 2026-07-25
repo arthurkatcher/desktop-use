@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from agent import Desktop, ManagedEnv, ask_model, execute, require_binaries
+from model_backends import resolve_model_backend
 
 NOVNC_DIR = "/usr/share/novnc"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +43,42 @@ SESS_DIR = os.path.join(HERE, "sessions")
 MIME = {".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
         ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
         ".json": "application/json", ".wasm": "application/wasm"}
+
+
+def _safe_session_part(part: str) -> bool:
+    """Reject empty, path separators, dots, and traversal components."""
+    if not part or part in (".", "..") or part.startswith("."):
+        return False
+    if os.sep in part or (os.altsep and os.altsep in part):
+        return False
+    if "/" in part or "\\" in part:
+        return False
+    return True
+
+
+def _js_str_escape(s: str) -> str:
+    """Escape a string for embedding inside a single-quoted JS literal."""
+    return (s.replace("\\", "\\\\")
+             .replace("'", "\\'")
+             .replace("\n", "\\n")
+             .replace("\r", "\\r")
+             .replace("</", "<\\/"))
+
+
+def inject_stream_url(page: bytes, stream_url: str | None,
+                      ws_port: int, remote: bool) -> bytes:
+    """Substitute page tokens for local ws port and optional remote stream.
+
+    Only injects stream_url when remote is True (sandbox-url mode). The
+    placeholder token ``__STREAM_URL__`` appears once as a JS string value;
+    the client checks ``!injected.startsWith('__')`` so a real URL can never
+    re-trigger the empty-placeholder guard.
+    """
+    page = page.replace(b"__WS_PORT__", str(ws_port).encode())
+    if remote and (stream_url or "").strip():
+        safe = _js_str_escape(stream_url.strip())
+        page = page.replace(b"__STREAM_URL__", safe.encode())
+    return page
 
 
 class SessionStore:
@@ -53,6 +90,11 @@ class SessionStore:
 
     def _dir(self, sid: str) -> str:
         return os.path.join(SESS_DIR, sid)
+
+    def _under_sess(self, path: str) -> bool:
+        root = os.path.realpath(SESS_DIR)
+        real = os.path.realpath(path)
+        return real == root or real.startswith(root + os.sep)
 
     def create(self, task: str, model: str) -> dict:
         with self.lock:
@@ -74,10 +116,13 @@ class SessionStore:
             json.dump(meta, f)
 
     def meta(self, sid: str) -> dict | None:
-        if os.sep in sid or sid.startswith("."):
+        if not _safe_session_part(sid):
             return None
         try:
-            with open(os.path.join(self._dir(sid), "meta.json")) as f:
+            path = os.path.join(self._dir(sid), "meta.json")
+            if not self._under_sess(path):
+                return None
+            with open(path) as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
@@ -102,6 +147,8 @@ class SessionStore:
             f.write(json.dumps(event) + "\n")
 
     def events(self, sid: str) -> list[dict]:
+        if not _safe_session_part(sid):
+            return []
         try:
             with open(os.path.join(self._dir(sid), "events.jsonl")) as f:
                 return [json.loads(line) for line in f if line.strip()]
@@ -113,10 +160,13 @@ class SessionStore:
             f.write(png)
 
     def shot(self, sid: str, name: str) -> bytes | None:
-        if os.sep in sid or os.sep in name:
+        if not _safe_session_part(sid) or not _safe_session_part(name):
             return None
         try:
-            with open(os.path.join(self._dir(sid), f"{name}.png"), "rb") as f:
+            path = os.path.join(self._dir(sid), f"{name}.png")
+            if not self._under_sess(path):
+                return None
+            with open(path, "rb") as f:
                 return f.read()
         except OSError:
             return None
@@ -219,8 +269,11 @@ class Runner:
     def _run(self, sid: str, task: str):
         desk, cfg, store = self.desk, self.cfg, self.store
         seq = 0
+        backend_flag = getattr(cfg, "model_backend", "auto")
+        resolved = resolve_model_backend(
+            cfg.base_url, cfg.model, backend_flag)
         seq = self._emit(sid, seq, t="run_start", task=task,
-                         max_steps=cfg.max_steps)
+                         max_steps=cfg.max_steps, backend=resolved)
         history: list[str] = []
         prev_png: bytes | None = None
         last_action: dict | None = None
@@ -249,7 +302,8 @@ class Runner:
                                 http, cfg.base_url, cfg.api_key, cfg.model,
                                 task, png, history,
                                 (desk.width, desk.height), prev_png=prev_png,
-                                complaint=complaint)
+                                complaint=complaint,
+                                backend=backend_flag)
                             break
                         except (httpx.HTTPError, ValueError) as e:
                             complaint = str(e)
@@ -354,9 +408,11 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
         def _page(self, name: str):
             with open(os.path.join(HERE, name), "rb") as f:
                 page = f.read()
-            self._send(200, page.replace(b"__WS_PORT__",
-                                         str(cfg.ws_port).encode()),
-                       "text/html")
+            remote = bool(getattr(cfg, "sandbox_url", None))
+            stream = (getattr(cfg, "stream_url", None) or "").strip()
+            page = inject_stream_url(
+                page, stream if remote else None, cfg.ws_port, remote)
+            self._send(200, page, "text/html")
 
         def do_GET(self):
             url = urlparse(self.path)
@@ -384,9 +440,20 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
                 else:
                     self._send(200, png, "image/png")
             elif url.path.startswith("/novnc/"):
-                rel = os.path.normpath(url.path[len("/novnc/"):])
-                full = os.path.join(NOVNC_DIR, rel)
-                if rel.startswith("..") or not os.path.isfile(full):
+                rel = url.path[len("/novnc/"):]
+                if not rel or rel.startswith("/") or "\\" in rel:
+                    self._send(404, b"not found", "text/plain")
+                    return
+                rel = os.path.normpath(rel)
+                if rel.startswith("..") or os.path.isabs(rel):
+                    self._send(404, b"not found", "text/plain")
+                    return
+                root = os.path.realpath(NOVNC_DIR)
+                full = os.path.realpath(os.path.join(NOVNC_DIR, rel))
+                if not (full == root or full.startswith(root + os.sep)):
+                    self._send(404, b"not found", "text/plain")
+                    return
+                if not os.path.isfile(full):
                     self._send(404, b"not found", "text/plain")
                     return
                 ext = os.path.splitext(full)[1]
@@ -481,12 +548,18 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
             live = runner.active_sid == sid
             q = bus.subscribe(sid) if live else None
             try:
-                self._sse_write({"t": "hello", "model": meta["model"],
-                                 "display": runner.desk.name,
-                                 "width": runner.desk.width,
-                                 "height": runner.desk.height,
-                                 "max_steps": cfg.max_steps, "live": live,
-                                 "status": meta["status"]})
+                remote = bool(getattr(cfg, "sandbox_url", None))
+                hello = {"t": "hello", "model": meta["model"],
+                         "display": runner.desk.name,
+                         "width": runner.desk.width,
+                         "height": runner.desk.height,
+                         "max_steps": cfg.max_steps, "live": live,
+                         "status": meta["status"],
+                         "mode": "remote" if remote else "local"}
+                stream = (getattr(cfg, "stream_url", None) or "").strip()
+                if remote and stream:
+                    hello["stream_url"] = stream
+                self._sse_write(hello)
                 max_seq = -1
                 for event in store.events(sid):
                     max_seq = max(max_seq, event.get("seq", -1))
@@ -525,17 +598,87 @@ def main():
     parser.add_argument("--model",
                         default=os.environ.get("LOCAL_LOOP_MODEL", "qwen2.5vl"))
     parser.add_argument("--api-key",
-                        default=os.environ.get("OPENAI_API_KEY", "local"))
+                        default=(os.environ.get("OPENAI_API_KEY")
+                                 or os.environ.get("HAI_API_KEY")
+                                 or "local"))
+    parser.add_argument(
+        "--model-backend",
+        choices=("auto", "generic", "holo"),
+        default=(os.environ.get("MODEL_BACKEND")
+                 or os.environ.get("DESKTOP_USE_MODEL_BACKEND")
+                 or "auto"),
+        help="model harness: auto|generic|holo (see agent.py)")
     parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--port", type=int, default=7788)
     parser.add_argument("--vnc-port", type=int, default=5900)
     parser.add_argument("--ws-port", type=int, default=6080)
+    parser.add_argument("--sandbox-url",
+                        default=(os.environ.get("SANDBOX_URL")
+                                 or os.environ.get("DESKTOP_SANDBOX_URL")
+                                 or "") or None,
+                        help="remote desktop-sandbox API "
+                             "(skips local Xephyr/VNC spawn)")
+    parser.add_argument("--stream-url",
+                        default=(os.environ.get("STREAM_URL")
+                                 or os.environ.get("DESKTOP_STREAM_URL")
+                                 or "") or None,
+                        help="websocket URL for noVNC "
+                             "(default: from sandbox health or local ws-port)")
+    parser.add_argument("--sandbox-token",
+                        default=(os.environ.get("SANDBOX_TOKEN")
+                                 or os.environ.get("DESKTOP_SANDBOX_TOKEN")
+                                 or "") or None,
+                        help="token for sandbox API")
     cfg = parser.parse_args()
+
+    if not os.path.isdir(NOVNC_DIR):
+        sys.exit(f"noVNC not found at {NOVNC_DIR} (apt install novnc)")
+
+    if cfg.sandbox_url:
+        from remote import RemoteDesktop
+        # Normalize whitespace-only stream so health stream_ws can fill in.
+        cfg.stream_url = (cfg.stream_url or "").strip() or None
+        desk = RemoteDesktop(
+            cfg.sandbox_url,
+            token=cfg.sandbox_token or "",
+            stream_url=cfg.stream_url,
+        )
+        if not cfg.stream_url:
+            cfg.stream_url = (desk.stream_url or "").strip() or ""
+        bus = Bus()
+        store = SessionStore()
+        runner = Runner(desk, bus, store, cfg)
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", cfg.port),
+            make_handler(bus, runner, store, cfg))
+        print(f"console: http://localhost:{cfg.port}  (remote sandbox)")
+        print(f"sandbox: {cfg.sandbox_url}")
+        if cfg.stream_url:
+            print(f"stream:  {cfg.stream_url}")
+        else:
+            # Remote mode never starts local websockify; empty stream leaves
+            # the page on dead ws://hostname:ws_port. Fail loud for operators.
+            print(
+                "warning: no stream_url after sandbox health "
+                "(stream_ws empty and --stream-url/STREAM_URL unset); "
+                "live noVNC will not work. Set --stream-url or fix "
+                "sandbox VNC/websockify.",
+                file=sys.stderr,
+                flush=True,
+            )
+        if cfg.task:
+            sid = runner.launch(cfg.task)
+            print(f"session: http://localhost:{cfg.port}/s/{sid}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nshutting down")
+        finally:
+            desk.close()
+        return
 
     require_binaries(["Xephyr", "openbox", "scrot", "xterm",
                       "x11vnc", "websockify"])
-    if not os.path.isdir(NOVNC_DIR):
-        sys.exit(f"noVNC not found at {NOVNC_DIR} (apt install novnc)")
 
     procs: list[subprocess.Popen] = []
     with ManagedEnv() as display:

@@ -514,7 +514,14 @@ const sid = decodeURIComponent(location.pathname.split('/').pop());
 /* ── live VM ─────────────────────────────────────── */
 let rfb = null, vncUp = false;
 function connectVNC() {
-  rfb = new RFB($('screen'), `ws://${location.hostname}:__WS_PORT__`);
+  // Server replaces only the value token below for remote sandbox mode.
+  // Unreplaced / empty keeps the local websockify port. Guard uses a
+  // different pattern so the replace cannot make the check self-defeating.
+  const injected = '__STREAM_URL__';
+  const streamUrl = (injected && !injected.startsWith('__'))
+    ? injected
+    : `ws://${location.hostname}:__WS_PORT__`;
+  rfb = new RFB($('screen'), streamUrl);
   rfb.viewOnly = true;
   rfb.scaleViewport = true;
   rfb.addEventListener('connect', () => { vncUp = true; refreshLabel(); });
