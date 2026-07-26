@@ -7,7 +7,7 @@ import unittest
 
 import httpx
 
-from remote import RemoteDesktop, sanitize_remote_action
+from desktop_use.remote import RemoteDesktop, sanitize_remote_action
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"fake"
@@ -238,7 +238,7 @@ class TestRemoteDesktop(unittest.TestCase):
 
 class TestCliArgs(unittest.TestCase):
     def test_agent_parser_sandbox_flags(self):
-        src = open("agent.py").read()
+        src = open("desktop_use/agent.py").read()
         self.assertIn("--sandbox-url", src)
         self.assertIn("--stream-url", src)
         self.assertIn("--sandbox-token", src)
@@ -246,7 +246,7 @@ class TestCliArgs(unittest.TestCase):
         self.assertIn("RemoteDesktop", src)
 
     def test_ui_parser_sandbox_flags(self):
-        src = open("ui.py").read()
+        src = open("desktop_use/ui.py").read()
         self.assertIn("--sandbox-url", src)
         self.assertIn("--stream-url", src)
         self.assertIn("RemoteDesktop", src)

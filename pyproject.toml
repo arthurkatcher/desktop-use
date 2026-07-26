@@ -1,0 +1,14 @@
+[project]
+name = "desktop-use-hosted"
+version = "0.0.3"
+description = "Control plane for a computer-use stack: agent loop, operator console, screen fleet"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "python-xlib>=0.33",
+]
+
+# Deps-only environment; the package is run from the source tree via
+# `uv run python -m desktop_use.ui` / `... desktop_use.agent`.
+[tool.uv]
+package = false

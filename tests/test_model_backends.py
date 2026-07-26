@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from model_backends import (
+from desktop_use.model_backends import (
     AGENT_ACTION_TYPES,
     SCROLL_AMOUNT_MAX,
     build_generic_request_body,

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 pytest.importorskip("agent")
-import agent as agent_mod
+from desktop_use import agent as agent_mod
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:

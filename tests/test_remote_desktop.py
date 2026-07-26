@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 pytest.importorskip("remote")
-from remote import RemoteDesktop
+from desktop_use.remote import RemoteDesktop
 
 
 def _mock_server(token: str = "", use_v1: bool = True):
@@ -150,7 +150,7 @@ def test_remote_legacy_paths_fallback():
 
 def test_execute_shared_dispatcher_uses_port():
     """agent.execute should call DesktopPort methods on RemoteDesktop."""
-    import agent as agent_mod
+    from desktop_use import agent as agent_mod
 
     srv, port, state = _mock_server()
     try:

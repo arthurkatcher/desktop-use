@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.0.3 (2026-07-26)
+
+### UI polish
+
+- Add Screen and New Session forms are now closable overlay modals triggered
+  by buttons, keeping the home page clean.
+- Screens list uses row layout (matching Sessions) instead of cards.
+
+## Unreleased
+
+### Screens console MVP (branch `feat/screens-console-mvp`)
+
+- Screen registry (`screen_store.py`): external sandboxes with health-gated
+  create (`remote.probe_health`, never raises), soft power on/off, exclusive
+  lease per session, control FSM (`none` / `ai` / `human` + TTL).
+- Settings store (`settings_store.py`): `settings.json` defaults for new
+  sessions, presets (Holo3 35B fast / Holo3 122B larger / Claude Sonnet 5 /
+  Claude Opus 5), validation, atomic writes, `public_settings` redaction.
+- Console home gains Sessions / Screens / Settings panels: paginated session
+  list with filters, screen cards, backend-aware model picker, preset chips,
+  default-screen dropdown.
+- Per-screen page `/screen/<id>`: full-viewport live noVNC stream, take
+  control / release with TTL hold countdown, power and health actions,
+  lease banner deep-linking the holding session.
+- Runner re-reads settings per launch and binds leased screens via a
+  per-session `RemoteDesktop`; human holds on a leased screen pause the
+  agent through the same step-boundary interrupt contract.
+
+### Fixes
+
+- Human-hold TTL expiry now also unblocks a session already waiting in
+  take-control (`_wait_control` re-syncs from the registry each tick).
+- Removed dead `merge_runtime_cfg` stub and a redundant AI-gate block in
+  the run loop.
+
+### Repo layout
+
+- Python modules moved into the `desktop_use/` package (relative imports);
+  run via `uv run python -m desktop_use.ui` / `... desktop_use.agent`.
+- Frontend split out of inline HTML into `desktop_use/static/`
+  (`home.html`, `session.html`, `screen.html` + per-page css/js;
+  `css/console.css` owns all theme tokens and shared primitives).
+- Stream tokens bridged via one inline `window.DU` object per page;
+  module js ships token-free. `/static/` route added with traversal guard.
+- `pyproject.toml` carries runtime deps (httpx, python-xlib); PEP 723
+  script headers removed.
+- `ui.html` renamed to `session.html`.
+
 ## 0.0.2 (2026-07-25)
 
 ### Session idle, End, and status UX

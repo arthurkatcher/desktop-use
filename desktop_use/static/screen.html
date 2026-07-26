@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>screen · desktop-use</title>
+<script>
+  const stored = localStorage.getItem('du-theme');
+  if (stored) document.documentElement.dataset.theme = stored;
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/console.css">
+<link rel="stylesheet" href="/static/css/screen.css">
+</head>
+<body>
+
+<header>
+  <a class="back" href="/">‹ CONSOLE</a>
+  <div class="wordmark"><span class="lamp" id="lamp"></span>SCREEN</div>
+  <span id="scr-name">…</span>
+  <div class="gauges">
+    <div class="gauge"><span class="k">POWER</span>
+      <span class="v" id="g-power">–</span></div>
+    <div class="gauge"><span class="k">LEASE</span>
+      <span class="v" id="g-lease">–</span></div>
+    <div class="gauge"><span class="k">INPUT</span>
+      <span class="v" id="g-input">–</span></div>
+    <div class="gauge"><span class="k">RES</span>
+      <span class="v" id="g-res">–</span></div>
+  </div>
+  <button class="theme-btn" id="theme-btn" title="Toggle light/dark theme">◐</button>
+</header>
+
+<main>
+  <div class="banner" id="lease-banner">
+    <span id="lease-text"></span>
+    <a href="#" id="lease-link">OPEN SESSION ›</a>
+  </div>
+
+  <div class="stage">
+    <div class="monitor" id="monitor">
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+      <div id="screen"></div>
+      <div class="veil" id="veil">
+        <div class="t" id="veil-title"></div>
+        <div class="s" id="veil-sub"></div>
+        <button class="btn" id="veil-btn" style="display:none">TURN ON</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="deck">
+    <div class="readouts">
+      <div class="ro"><span class="k">SIGNAL</span>
+        <span class="v" id="ro-signal">…</span></div>
+      <div class="ro"><span class="k">CONTROL</span>
+        <span class="v" id="ro-ctl">VIEW</span></div>
+      <div class="ro"><span class="k">HOLD</span>
+        <span class="v" id="ro-ttl">–</span></div>
+    </div>
+    <div class="spacer"></div>
+    <span class="hint" id="deck-hint"></span>
+    <button class="btn ghost" id="health-btn">RETRY HEALTH</button>
+    <button class="btn ghost" id="power-btn">TURN OFF</button>
+    <button class="btn danger" id="del-btn" style="display:none">DELETE</button>
+    <button class="btn" id="control-btn">TAKE CONTROL</button>
+  </div>
+</main>
+
+<script>
+  window.DU = { streamUrl: '__STREAM_URL__', wsPort: '__WS_PORT__' };
+</script>
+<script type="module" src="/static/js/screen.js"></script>
+</body>
+</html>

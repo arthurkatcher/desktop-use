@@ -1,4 +1,4 @@
-"""Regression tests for remote stream URL injection into ui.html."""
+"""Regression tests for remote stream URL injection into session.html."""
 
 from __future__ import annotations
 
@@ -6,48 +6,51 @@ import os
 import re
 import unittest
 
-from ui import inject_stream_url, _safe_session_part, SessionStore
+from desktop_use.ui import inject_stream_url, _safe_session_part, SessionStore
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UI_HTML = os.path.join(HERE, "ui.html")
+SESSION_HTML = os.path.join(
+    HERE, "desktop_use", "static", "session.html")
+SESSION_JS = os.path.join(
+    HERE, "desktop_use", "static", "js", "session.js")
 
 
 class TestStreamInject(unittest.TestCase):
     def setUp(self):
-        with open(UI_HTML, "rb") as f:
+        with open(SESSION_HTML, "rb") as f:
             self.page = f.read()
 
     def test_placeholder_present_once_as_value(self):
         # Only the JS value token should appear (not also in a includes-check).
         self.assertEqual(self.page.count(b"__STREAM_URL__"), 1)
-        self.assertIn(b"const injected = '__STREAM_URL__';", self.page)
-        self.assertIn(b"startsWith('__')", self.page)
+        self.assertIn(b"streamUrl: '__STREAM_URL__'", self.page)
+        self.assertIn(b"wsPort: '__WS_PORT__'", self.page)
         # Old self-defeating token must not return.
         self.assertNotIn(b"STREAM_URL_INJECT", self.page)
+
+    def test_guard_lives_in_session_js(self):
+        with open(SESSION_JS) as f:
+            js = f.read()
+        self.assertIn("startsWith('__')", js)
+        self.assertIn("window.DU.streamUrl", js)
+        self.assertIn("window.DU.wsPort", js)
+        # The js file ships with no tokens; injection is page-side only.
+        self.assertNotIn("__STREAM_URL__", js)
+        self.assertNotIn("__WS_PORT__", js)
 
     def test_remote_inject_uses_stream_not_ws_port(self):
         stream = "ws://127.0.0.1:6080/websockify"
         out = inject_stream_url(
             self.page, stream, ws_port=9999, remote=True).decode()
         # Value is substituted; guard no longer sees the placeholder.
-        self.assertIn(f"const injected = '{stream}';", out)
+        self.assertIn(f"streamUrl: '{stream}'", out)
         self.assertNotIn("__STREAM_URL__", out)
-        # Local port still substituted for the fallback template, but the
-        # chosen streamUrl must be the remote one (guard passes).
-        m = re.search(
-            r"const injected = '([^']*)';\s*"
-            r"const streamUrl = \(injected && !injected\.startsWith\('__'\)\)\s*"
-            r"\? injected\s*"
-            r": `ws://\$\{location\.hostname\}:(\d+)`",
-            out,
-        )
-        self.assertIsNotNone(m, "streamUrl assignment pattern missing")
-        self.assertEqual(m.group(1), stream)
-        self.assertEqual(m.group(2), "9999")
+        # Local port still substituted for the fallback in the js module.
+        self.assertIn("wsPort: '9999'", out)
         # Simulated JS guard: injected does not start with __ → use remote.
-        injected = m.group(1)
+        injected = stream
         chosen = injected if (injected and not injected.startswith("__")) \
-            else f"ws://localhost:{m.group(2)}"
+            else "ws://localhost:9999"
         self.assertEqual(chosen, stream)
 
     def test_local_mode_never_injects_even_if_stream_set(self):
@@ -57,15 +60,15 @@ class TestStreamInject(unittest.TestCase):
             ws_port=6080,
             remote=False,
         ).decode()
-        self.assertIn("const injected = '__STREAM_URL__';", out)
+        self.assertIn("streamUrl: '__STREAM_URL__'", out)
         self.assertNotIn("ws://evil", out)
         # Fallback still gets the local port.
-        self.assertIn(":6080`", out)
+        self.assertIn("wsPort: '6080'", out)
 
     def test_remote_empty_stream_keeps_placeholder(self):
         out = inject_stream_url(
             self.page, "", ws_port=6080, remote=True).decode()
-        self.assertIn("const injected = '__STREAM_URL__';", out)
+        self.assertIn("streamUrl: '__STREAM_URL__'", out)
         injected = "__STREAM_URL__"
         chosen = injected if (injected and not injected.startswith("__")) \
             else "ws://localhost:6080"
@@ -77,9 +80,9 @@ class TestStreamInject(unittest.TestCase):
         out = inject_stream_url(
             self.page, evil, ws_port=1, remote=True).decode()
         # Escaped form keeps a single single-quoted literal.
-        self.assertIn(r"const injected = 'ws://x/\';alert(1)//';", out)
+        self.assertIn(r"streamUrl: 'ws://x/\';alert(1)//'", out)
         # Unescaped breakout would look like: '...';alert... (quote ends early).
-        self.assertNotRegex(out, r"const injected = '[^'\\]*';alert")
+        self.assertNotRegex(out, r"streamUrl: '[^'\\]*';alert")
 
 
 class TestPathSafety(unittest.TestCase):

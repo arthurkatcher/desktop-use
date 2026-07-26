@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>desktop-use session</title>
+<script>
+  // apply the stored theme before first paint to avoid a flash
+  const stored = localStorage.getItem('du-theme');
+  if (stored) document.documentElement.dataset.theme = stored;
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/console.css">
+<link rel="stylesheet" href="/static/css/session.css">
+</head>
+<body>
+
+<header>
+  <a class="back" href="/">‹ SESSIONS</a>
+  <div class="wordmark"><span class="lamp" id="lamp"></span>DESKTOP·USE</div>
+  <div class="gauges">
+    <div class="gauge"><span class="k" id="g-step-k">STEP</span>
+      <span class="v" id="g-step">–<span class="dim">/–</span></span></div>
+    <div class="gauge"><span class="k">ELAPSED</span>
+      <span class="v" id="g-clock">0:00</span></div>
+    <div class="gauge"><span class="k">MODEL</span>
+      <span class="v" id="g-model">–</span></div>
+    <div class="gauge"><span class="k">DISPLAY</span>
+      <span class="v" id="g-display">–</span></div>
+  </div>
+  <div class="session-actions" id="session-actions">
+    <button id="end-btn" title="End session successfully (status: complete)">END</button>
+    <button id="stop-btn" title="Abort session (status: stopped)">STOP</button>
+  </div>
+  <button class="theme-btn" id="theme-btn" title="Toggle light/dark theme">◐</button>
+</header>
+
+<main>
+  <div class="left">
+    <div class="progress" id="progress"><span></span></div>
+    <div class="transcript" id="transcript">
+      <div class="empty" id="empty">
+        Waiting for this session's stream…
+        <div class="ghost">❯ connecting </div>
+      </div>
+    </div>
+    <div class="msgbar" id="msgbar">
+      <input id="msg-input" spellcheck="false"
+        placeholder="Message the agent mid-task…">
+      <button id="msg-send">SEND</button>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="feed-head">
+      <span class="eyebrow">VISUAL FEED</span>
+      <span class="sid" id="feed-sid"></span>
+    </div>
+    <div class="monitor" id="monitor">
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+      <div class="screen-clip">
+        <div id="screen"></div>
+        <img id="snap" alt="Step snapshot">
+      </div>
+    </div>
+    <div class="deck">
+      <div class="seg">
+        <button id="seg-live" class="active">LIVE</button>
+        <button id="seg-steps">SNAPSHOTS</button>
+      </div>
+      <div class="tl-group">
+        <button class="tl-arrow" id="tl-prev" title="Previous snapshot">‹</button>
+        <div class="timeline" id="dots"></div>
+        <button class="tl-arrow" id="tl-next" title="Next snapshot">›</button>
+      </div>
+      <div class="readouts">
+        <div class="ro"><span class="k">SIGNAL</span>
+          <span class="v vnc-bad" id="ro-signal">…</span></div>
+        <div class="ro"><span class="k">RES</span>
+          <span class="v" id="ro-res">–</span></div>
+        <div class="ro"><span class="k">VIEW</span>
+          <span class="v" id="ro-view">LIVE</span></div>
+      </div>
+      <button id="control-btn"
+        title="Let your mouse and keyboard reach the desktop">TAKE CONTROL</button>
+    </div>
+  </div>
+</main>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="eyebrow" id="modal-title"></div>
+    <p id="modal-text"></p>
+    <div class="modal-row" id="modal-row"></div>
+  </div>
+</div>
+
+<script>
+  window.DU = { streamUrl: '__STREAM_URL__', wsPort: '__WS_PORT__' };
+</script>
+<script type="module" src="/static/js/session.js"></script>
+</body>
+</html>

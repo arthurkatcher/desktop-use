@@ -22,31 +22,40 @@ sitting**. No framework, no build step. Resist any change that breaks that.
 
 ## File map
 
+Package `desktop_use/` (run via `python -m`, deps from `pyproject.toml`):
+
 | File | Role |
 |---|---|
-| `agent.py` | The agent brain and CLI. `Desktop` (scrot + XTest), `ManagedEnv` (Xephyr lifecycle), `ask_model`, `execute` (local methods or `RemoteDesktop.execute`), `run`. |
-| `model_backends.py` | Dual profile helpers: resolve generic vs Holo, scale `[0,1000]`→pixels, tool map, request bodies, normalize to `{reasoning, action}`. |
-| `remote.py` | `RemoteDesktop`: health / screenshot / action over httpx against a sandbox API. |
-| `ui.py` | Console server. Local mode spawns Xephyr + x11vnc + websockify; remote mode uses `RemoteDesktop` and injects `__STREAM_URL__` only when `--sandbox-url` is set. |
-| `ui.html` | Per-session console. noVNC uses injected remote URL when not still `__…__`, else local `__WS_PORT__`. |
-| `home.html` | Sessions list + launcher page. |
+| `desktop_use/agent.py` | The agent brain and CLI. `Desktop` (scrot + XTest), `ManagedEnv` (Xephyr lifecycle), `ask_model`, `execute` (local methods or `RemoteDesktop.execute`), `run`. |
+| `desktop_use/model_backends.py` | Dual profile helpers: resolve generic vs Holo, scale `[0,1000]`→pixels, tool map, request bodies, normalize to `{reasoning, action}`. |
+| `desktop_use/remote.py` | `RemoteDesktop`: health / screenshot / action over httpx against a sandbox API; `probe_health` (soft, never raises) for the screen registry. |
+| `desktop_use/screen_store.py` | Screen registry: connection, health, soft power, exclusive lease, control FSM (`none`/`ai`/`human` + TTL). |
+| `desktop_use/settings_store.py` | `settings.json` store: defaults + presets, validation, atomic writes, `public_settings` redaction. |
+| `desktop_use/ui.py` | Console server. Routes `/` (home), `/s/<id>` (session), `/screen/<id>` (screen live view + control), `/api/*`, `/static/*`, `/novnc/*`. Local mode spawns Xephyr + x11vnc + websockify. |
+| `desktop_use/static/` | Frontend, no build step. `home.html` (sessions / screens / settings panels), `session.html` (per-session console), `screen.html` (per-screen live view + take control). `css/console.css` owns all theme tokens + shared primitives; per-page css/js beside it. |
 | `tests/` | Unit tests (mock httpx for `RemoteDesktop`; dual-backend coverage). |
 | `evals/remote_smoke.py` | Live smoke against `SANDBOX_URL` if set. |
-| `sessions/` | Runtime data, gitignored. |
+| `sessions/`, `screens/`, `settings.json` | Runtime data, gitignored. |
+
+Stream injection: pages carry one `window.DU = { streamUrl: '__STREAM_URL__',
+wsPort: '__WS_PORT__' }` bridge inline; the module js (`static/js/*.js`) ships
+token-free and reads the bridge. Session page falls back to the local ws port
+when the placeholder survives; screen page never falls back (only the screen's
+own stream).
 
 ## Commands
 
 ```bash
-uv run agent.py --probe          # local capture + input pipeline check
-uv run agent.py "task..."        # headless CLI (spawns private Xephyr)
-uv run ui.py --base-url ... --model ...   # local console http://127.0.0.1:7788
+uv run python -m desktop_use.agent --probe        # local pipeline check
+uv run python -m desktop_use.agent "task..."      # headless CLI (private Xephyr)
+uv run python -m desktop_use.ui --base-url ... --model ...   # console :7788
 
 # remote sandbox (desktop-sandbox data plane on :7090 / :6080)
-uv run agent.py --sandbox-url http://127.0.0.1:7090 --probe
-uv run ui.py --sandbox-url http://127.0.0.1:7090 \
+uv run python -m desktop_use.agent --sandbox-url http://127.0.0.1:7090 --probe
+uv run python -m desktop_use.ui --sandbox-url http://127.0.0.1:7090 \
   --stream-url ws://127.0.0.1:6080 --base-url ... --model ...
 
-uv run --with pytest --with httpx --with python-xlib python -m pytest tests/ -v
+uv run --with pytest python -m pytest tests/ -v
 SANDBOX_URL=http://127.0.0.1:7090 uv run evals/remote_smoke.py
 ```
 
