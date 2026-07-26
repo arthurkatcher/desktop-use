@@ -1,10 +1,3 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#     "httpx>=0.27",
-#     "python-xlib>=0.33",
-# ]
-# ///
 """Minimal local computer-use loop: screenshot -> VLM -> XTest input.
 
 A from-scratch re-draft of the Holo runtime loop with no H Company gateway
@@ -16,8 +9,8 @@ Designed for a nested X display (Xephyr) so it never touches the real desktop:
     Xephyr :2 -screen 1280x800 &
     DISPLAY=:2 setxkbmap us
     DISPLAY=:2 openbox &
-    uv run agent.py --display :2 --probe          # pipeline check, no model
-    uv run agent.py --display :2 "open a terminal and run ls"
+    uv run python -m desktop_use.agent --display :2 --probe   # pipeline check
+    uv run python -m desktop_use.agent --display :2 "open a terminal and run ls"
 """
 
 from __future__ import annotations
@@ -37,7 +30,7 @@ import httpx
 from Xlib import XK, X, display as xdisplay
 from Xlib.ext import xtest
 
-from model_backends import (
+from .model_backends import (
     AGENT_ACTION_TYPES,
     build_generic_request_body,
     build_holo_request_body,

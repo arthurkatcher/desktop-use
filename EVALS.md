@@ -18,7 +18,7 @@ Override with `SANDBOX_URL` or `DESKTOP_SANDBOX_URL`.
 
 ```bash
 cd desktop-use-hosted
-uv run --with pytest pytest -q tests/
+uv run --with pytest python -m pytest tests/ -q
 ```
 
 Coverage:
@@ -46,7 +46,7 @@ What it does:
 
 1. `GET $SANDBOX_URL/health` (SKIP with clear message if down)
 2. `RemoteDesktop` screenshot + move/click (and best-effort xterm + `date`)
-3. If `OPENAI_API_KEY` is set, runs a short `agent.py --sandbox-url ...` task
+3. If `OPENAI_API_KEY` is set, runs a short `desktop_use.agent --sandbox-url ...` task
 
 Artifacts: `/tmp/hosted-e2e-shot.png`, plus agent final shot under `/tmp` when
 the optional model step runs.
@@ -63,7 +63,7 @@ uv run python evals/hosted_e2e.py
 ## Probe only (CLI)
 
 ```bash
-uv run agent.py --sandbox-url http://127.0.0.1:7090 --probe
+uv run python -m desktop_use.agent --sandbox-url http://127.0.0.1:7090 --probe
 ```
 
 ## Pair integration (from sandbox repo)
@@ -77,7 +77,7 @@ cd desktop-sandbox
 ## Console remote mode
 
 ```bash
-uv run ui.py \
+uv run python -m desktop_use.ui \
   --sandbox-url http://127.0.0.1:7090 \
   --stream-url ws://127.0.0.1:6080 \
   --base-url https://openrouter.ai/api/v1 \

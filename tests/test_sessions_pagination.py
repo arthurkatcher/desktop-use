@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 
-import ui as ui_mod
+from desktop_use import ui as ui_mod
 
 
 class TestSessionPagination(unittest.TestCase):

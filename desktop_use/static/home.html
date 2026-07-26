@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>desktop-use console</title>
+<script>
+  // apply the stored theme before first paint to avoid a flash
+  const stored = localStorage.getItem('du-theme');
+  if (stored) document.documentElement.dataset.theme = stored;
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/console.css">
+<link rel="stylesheet" href="/static/css/home.css">
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="side-mark"><span class="lamp" id="lamp"></span>DESKTOP·USE</div>
+  <button class="nav-btn active" data-nav="sessions">SESSIONS</button>
+  <button class="nav-btn" data-nav="screens">SCREENS</button>
+  <button class="nav-btn" data-nav="settings">SETTINGS</button>
+  <div class="side-foot">
+    <button class="theme-btn" id="theme-btn" title="Toggle light/dark theme">◐</button>
+  </div>
+</aside>
+
+<div class="main">
+<header>
+  <div class="head-meta"><span id="head-state">SESSIONS</span></div>
+</header>
+
+<div class="wrap"><div class="inner">
+
+  <!-- ── Sessions ─────────────────────────────────── -->
+  <section class="panel active" id="panel-sessions">
+    <div class="section-head">
+      <div class="eyebrow">SESSIONS</div>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="launch-row" style="margin-bottom:16px">
+      <button class="btn" id="new-session-btn">＋ NEW SESSION</button>
+    </div>
+    <div class="overlay" id="sess-overlay">
+      <div class="overlay-panel">
+        <div class="overlay-head">
+          <span class="eyebrow">NEW SESSION</span>
+          <button class="overlay-close" id="sess-overlay-close">✕</button>
+        </div>
+        <div class="prompt-box">
+          <textarea id="task" spellcheck="false"
+            placeholder="Describe what the agent should do on the desktop…"></textarea>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label for="screen-pick">SCREEN</label>
+          <select id="screen-pick">
+            <option value="">(local / boot desk)</option>
+          </select>
+        </div>
+        <div class="launch-row">
+          <button class="btn" id="launch-btn">LAUNCH SESSION</button>
+          <span class="hint" id="hint"></span>
+          <span class="kbd">⌃ ↵</span>
+        </div>
+        <div class="flash" id="sess-flash" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <div class="eyebrow" style="margin-top:28px">HISTORY</div>
+    <div class="filters">
+      <select id="sess-status">
+        <option value="">all status</option>
+        <option>running</option><option>idle</option><option>complete</option>
+        <option>stopped</option><option>error</option><option>ended</option>
+        <option>idle_timeout</option>
+      </select>
+      <input type="text" id="sess-q" placeholder="filter task / id">
+    </div>
+    <div id="list"></div>
+    <div class="row-actions">
+      <button class="btn ghost" id="sess-more" style="display:none">LOAD MORE</button>
+    </div>
+  </section>
+
+  <!-- ── Screens ──────────────────────────────────── -->
+  <section class="panel" id="panel-screens">
+    <div class="section-head">
+      <div class="eyebrow">SCREENS</div>
+      <span class="count" id="scr-count"></span>
+    </div>
+    <div class="launch-row" style="margin-bottom:16px">
+      <button class="btn" id="add-screen-btn">＋ ADD SCREEN</button>
+    </div>
+    <div class="overlay" id="scr-overlay">
+      <div class="overlay-panel">
+        <div class="overlay-head">
+          <span class="eyebrow">ADD SCREEN (EXTERNAL)</span>
+          <button class="overlay-close" id="scr-overlay-close">✕</button>
+        </div>
+        <div class="grid2">
+          <div class="field"><label for="scr-name">NAME</label>
+            <input type="text" id="scr-name" placeholder="Work desktop"></div>
+          <div class="field"><label for="scr-url">SANDBOX URL</label>
+            <input type="text" id="scr-url" placeholder="http://127.0.0.1:7090"></div>
+          <div class="field"><label for="scr-stream">STREAM URL</label>
+            <input type="text" id="scr-stream" placeholder="ws://127.0.0.1:6080"></div>
+          <div class="field"><label for="scr-token">TOKEN</label>
+            <input type="password" id="scr-token" placeholder="optional"></div>
+        </div>
+        <div class="launch-row">
+          <button class="btn" id="create-screen">CREATE (HEALTH GATE)</button>
+          <span class="hint">fails without saving if /health fails</span>
+        </div>
+        <div class="flash" id="scr-flash"></div>
+      </div>
+    </div>
+
+    <div class="eyebrow" style="margin-top:28px">ALL SCREENS</div>
+    <div class="filters">
+      <select id="scr-status">
+        <option value="">all power</option>
+        <option value="on">on</option>
+        <option value="off">off</option>
+        <option value="error">error</option>
+      </select>
+      <select id="scr-lease">
+        <option value="">all lease</option>
+        <option value="free">free</option>
+        <option value="leased">leased</option>
+      </select>
+      <input type="text" id="scr-q" placeholder="filter name / host">
+    </div>
+    <div id="scr-list"></div>
+    <div class="row-actions">
+      <button class="btn ghost" id="scr-more" style="display:none">LOAD MORE</button>
+    </div>
+  </section>
+
+  <!-- ── Settings ─────────────────────────────────── -->
+  <section class="panel" id="panel-settings">
+    <div class="eyebrow">PRESETS</div>
+    <div class="chips" id="preset-chips"></div>
+
+    <div class="set-card">
+      <div class="set-head">MODEL</div>
+      <div class="field">
+        <label>BACKEND</label>
+        <div class="seg" id="backend-seg">
+          <button data-b="auto">AUTO</button>
+          <button data-b="generic">GENERIC</button>
+          <button data-b="holo">HOLO</button>
+        </div>
+        <div class="sub" id="backend-sub"></div>
+      </div>
+      <div class="grid2">
+        <div class="field">
+          <label for="set-model">MODEL</label>
+          <select id="set-model"></select>
+        </div>
+        <div class="field" id="set-model-custom-wrap" style="display:none">
+          <label for="set-model-custom">CUSTOM MODEL ID</label>
+          <input type="text" id="set-model-custom" placeholder="org/model-id">
+        </div>
+        <div class="field">
+          <label for="set-base">BASE URL</label>
+          <input type="text" id="set-base">
+          <div class="sub" id="base-sub"></div>
+        </div>
+        <div class="field">
+          <label for="set-key">API KEY (local store)</label>
+          <input type="password" id="set-key">
+          <div class="sub" id="set-key-hint"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="set-card">
+      <div class="set-head">AGENT LOOP</div>
+      <div class="grid2">
+        <div class="field">
+          <label for="set-steps">MAX STEPS</label>
+          <input type="number" id="set-steps" min="1">
+        </div>
+        <div class="field">
+          <label for="set-idle">IDLE TIMEOUT (s)</label>
+          <input type="number" id="set-idle" min="1">
+          <div class="sub">park idle this long after the last action</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="set-card">
+      <div class="set-head">OPERATOR CONTROL</div>
+      <div class="grid2">
+        <div class="field">
+          <label for="set-ttl">HUMAN HOLD TTL (s)</label>
+          <input type="number" id="set-ttl" min="1">
+          <div class="sub">take-control auto-release timer</div>
+        </div>
+        <div class="field">
+          <label for="set-screen">DEFAULT SCREEN</label>
+          <select id="set-screen">
+            <option value="">(local / boot desk)</option>
+          </select>
+          <div class="sub">preselected when launching a session</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="launch-row">
+      <button class="btn" id="save-settings">SAVE SETTINGS</button>
+      <span class="hint">applies to new sessions; running sessions keep their config</span>
+    </div>
+    <div class="flash" id="set-flash"></div>
+  </section>
+
+</div></div>
+</div>
+
+<script type="module" src="/static/js/home.js"></script>
+</body>
+</html>

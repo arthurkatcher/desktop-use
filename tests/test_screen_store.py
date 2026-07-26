@@ -9,8 +9,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from tempfile import TemporaryDirectory
 
-from remote import probe_health
-from screen_store import ScreenStore
+from desktop_use.remote import probe_health
+from desktop_use.screen_store import ScreenStore
 
 
 class _HealthHandler(BaseHTTPRequestHandler):

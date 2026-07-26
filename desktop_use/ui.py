@@ -1,19 +1,12 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#     "httpx>=0.27",
-#     "python-xlib>=0.33",
-# ]
-# ///
-"""Browser console for desktop-use: sessions, live VM view, streaming dialogue.
+"""Browser console for desktop-use: sessions, screens, live VM view.
 
-Serves a home page listing every session (persisted under sessions/) with a
-prompt to launch a new one, and a per-session console at /s/<id> where the
-left pane streams the agent's reasoning (SSE) and the right pane shows the
-live desktop (x11vnc + websockify + noVNC) or per-step snapshots.
+Serves a console home (sessions / screens / settings), a per-session view
+at /s/<id> (SSE transcript + live desktop or snapshots), and a per-screen
+view at /screen/<id> (live stream + operator control). Pages and their
+css/js live in desktop_use/static/.
 
-    uv run ui.py                       # open the printed URL
-    uv run ui.py "open a terminal..."  # also launch this task immediately
+    uv run python -m desktop_use.ui                       # open printed URL
+    uv run python -m desktop_use.ui "open a terminal..."  # launch task too
 
 Everything (display, VNC, websockify, server) is torn down on Ctrl+C.
 """
@@ -33,17 +26,21 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from agent import Desktop, ManagedEnv, ask_model, execute, require_binaries
-from model_backends import resolve_model_backend
-from remote import probe_health
-from screen_store import ScreenStore
-from settings_store import SettingsStore, public_settings
+from .agent import (
+    Desktop, ManagedEnv, ask_model, execute, require_binaries,
+)
+from .model_backends import resolve_model_backend
+from .remote import probe_health
+from .screen_store import ScreenStore
+from .settings_store import SettingsStore, public_settings
 
 NOVNC_DIR = "/usr/share/novnc"
-HERE = os.path.dirname(os.path.abspath(__file__))
-SESS_DIR = os.path.join(HERE, "sessions")
-SCREENS_DIR = os.path.join(HERE, "screens")
-SETTINGS_PATH = os.path.join(HERE, "settings.json")
+PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(PKG_DIR)
+STATIC_DIR = os.path.join(PKG_DIR, "static")
+SESS_DIR = os.path.join(ROOT, "sessions")
+SCREENS_DIR = os.path.join(ROOT, "screens")
+SETTINGS_PATH = os.path.join(ROOT, "settings.json")
 
 MIME = {".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
         ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
@@ -328,7 +325,7 @@ class Runner:
                 acquired_screen = screen_id
                 sm = self.screens.get(screen_id)
                 conn = (sm or {}).get("connection") or {}
-                from remote import RemoteDesktop
+                from .remote import RemoteDesktop
                 session_desk = RemoteDesktop(
                     conn.get("sandbox_url") or "",
                     token=conn.get("token") or "",
@@ -409,8 +406,14 @@ class Runner:
                 self.pause_event.clear()
 
     def _wait_control(self, sid: str, seq: int, history: list[str]) -> int:
-        """Block while the user holds the desktop; note the handback."""
+        """Block while the user holds the desktop; note the handback.
+
+        Re-syncs from the screen registry each tick: a human hold that
+        expires via TTL must release the runner too, not only an
+        explicit /control/release.
+        """
         while self.pause_event.is_set() and not self._user_close():
+            self._sync_pause_from_screen()
             time.sleep(0.3)
         resumed = not self._user_close()
         if resumed:
@@ -510,10 +513,6 @@ class Runner:
                         if self.pause_event.is_set():
                             seq = self._wait_control(sid, seq, history)
                             last_activity = time.time()
-                            if (self.screens and screen_id
-                                    and not self._user_close()):
-                                # after human release, re-sync
-                                self._sync_pause_from_screen()
                         seq, _ = self._drain_msgs(sid, seq, history)
                         close = self._user_close()
                         if close:
@@ -527,19 +526,12 @@ class Runner:
                                 reason=close, summary=summary)
                             return
                         step += 1
-                        # AI action gate: do not execute if not allowed
-                        if (self.screens and screen_id
-                                and not self.screens.ai_may_act(
-                                    screen_id, sid)
-                                and not self.pause_event.is_set()):
-                            # parked with lease (idle control none) —
-                            # wait for message path via idle, not here
-                            self.screens.set_control_ai(screen_id, sid)
-                        if (self.screens and screen_id
-                                and self.screens.get(screen_id)
-                                and (self.screens.get(screen_id)
-                                     .get("control") or {}
-                                     ).get("holder") == "human"):
+                        # A human grab via the screens API may have landed
+                        # after the sync above: honor it at the boundary.
+                        scr_meta = (self.screens.get(screen_id)
+                                    if self.screens and screen_id else None)
+                        if ((scr_meta or {}).get("control") or {}
+                                ).get("holder") == "human":
                             self.pause_event.set()
                             seq = self._emit(sid, seq, t="skipped", n=step)
                             seq = self._wait_control(sid, seq, history)
@@ -784,7 +776,7 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg,
             return json.loads(self.rfile.read(length) or b"{}")
 
         def _page(self, name: str, stream_url: str | None = None):
-            with open(os.path.join(HERE, name), "rb") as f:
+            with open(os.path.join(STATIC_DIR, name), "rb") as f:
                 page = f.read()
             remote = bool(getattr(cfg, "sandbox_url", None) or stream_url)
             stream = (stream_url
@@ -816,7 +808,23 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg,
                                       .get("stream_url")
                                       or (sm.get("health") or {})
                                       .get("stream_ws"))
-                    self._page("ui.html", stream_url=stream)
+                    self._page("session.html", stream_url=stream)
+            elif path.startswith("/screen/"):
+                scr_id = path[len("/screen/"):]
+                sm = screens.get(scr_id) if screens else None
+                if sm is None:
+                    self._send(404, b"unknown screen", "text/plain")
+                else:
+                    with open(os.path.join(STATIC_DIR, "screen.html"),
+                              "rb") as f:
+                        page = f.read()
+                    # Only this screen's own stream; never the boot stream.
+                    page = inject_stream_url(
+                        page,
+                        (sm.get("connection") or {}).get("stream_url")
+                        or (sm.get("health") or {}).get("stream_ws"),
+                        cfg.ws_port, True)
+                    self._send(200, page, "text/html")
             elif path in ("/sessions", "/api/sessions"):
                 limit = qs.get("limit")
                 offset = int(qs.get("offset") or 0)
@@ -894,6 +902,27 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg,
                     self._send(404, b"not found", "text/plain")
                 else:
                     self._send(200, png, "image/png")
+            elif path.startswith("/static/"):
+                rel = path[len("/static/"):]
+                if not rel or rel.startswith("/") or "\\" in rel:
+                    self._send(404, b"not found", "text/plain")
+                    return
+                rel = os.path.normpath(rel)
+                if rel.startswith("..") or os.path.isabs(rel):
+                    self._send(404, b"not found", "text/plain")
+                    return
+                root = os.path.realpath(STATIC_DIR)
+                full = os.path.realpath(os.path.join(STATIC_DIR, rel))
+                if not (full == root or full.startswith(root + os.sep)):
+                    self._send(404, b"not found", "text/plain")
+                    return
+                if not os.path.isfile(full):
+                    self._send(404, b"not found", "text/plain")
+                    return
+                ext = os.path.splitext(full)[1]
+                with open(full, "rb") as f:
+                    self._send(200, f.read(),
+                               MIME.get(ext, "application/octet-stream"))
             elif path.startswith("/novnc/"):
                 rel = path[len("/novnc/"):]
                 if not rel or rel.startswith("/") or "\\" in rel:
@@ -1332,17 +1361,12 @@ def main():
     screens = ScreenStore(SCREENS_DIR, health_fn=probe_health)
 
     def _control_timer():
+        # Sweeps expired human holds. The runner also self-syncs inside
+        # _wait_control, so an expiring hold unblocks a waiting session.
         while True:
             time.sleep(1.0)
             try:
-                changed = screens.expire_human_control()
-                for sm in changed:
-                    lease = (sm.get("lease") or {}).get("session_id")
-                    if not lease:
-                        continue
-                    # wake runner if this was the active lease
-                    # (release human → ai)
-                    pass
+                screens.expire_human_control()
             except Exception:
                 pass
 
@@ -1369,7 +1393,7 @@ def main():
                       file=sys.stderr)
 
     if cfg.sandbox_url:
-        from remote import RemoteDesktop
+        from .remote import RemoteDesktop
         # Normalize whitespace-only stream so health stream_ws can fill in.
         cfg.stream_url = (cfg.stream_url or "").strip() or None
         desk = RemoteDesktop(

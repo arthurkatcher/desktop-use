@@ -75,3 +75,18 @@ Stop before Part H (live e2e) until operator says go.
 
 ## STOP before Part H
 Awaiting operator go for live sandbox e2e wave.
+
+## Follow-up wave (2026-07-26, second pass)
+- Operator feedback: screens list detail panel replaced by a per-screen page
+  `/screen/<id>` (live noVNC + take/release control + TTL countdown + power).
+- Settings redesigned: preset chips, backend segmented control, backend-aware
+  model dropdown (Holo3 35B/122B; Claude Sonnet 5/Opus 5; custom), default
+  screen dropdown.
+- Fixes: TTL expiry now unblocks a session waiting in `_wait_control`;
+  dead `merge_runtime_cfg` and redundant AI gate removed; presets refreshed.
+- Repo restructure: `desktop_use/` package + `desktop_use/static/` frontend
+  (html/css/js split, shared `console.css`), `pyproject.toml` replaces
+  PEP 723 headers, `ui.html` → `session.html`.
+- Docs synced (AGENTS.md, README.md, CHANGELOG.md).
+- Tests: suite re-run + new coverage for `/screen/<id>` and TTL unblock
+  pending; Part H (live e2e) still awaits operator go.

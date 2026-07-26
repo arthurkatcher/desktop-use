@@ -7,7 +7,9 @@ import os
 import tempfile
 import unittest
 
-from settings_store import DEFAULTS, SettingsStore, public_settings
+from desktop_use.settings_store import (
+    DEFAULTS, SettingsStore, public_settings,
+)
 
 
 class TestSettingsStore(unittest.TestCase):
@@ -66,7 +68,7 @@ class TestSettingsStore(unittest.TestCase):
             self.store.save({"model_backend": "nope"})
 
     def test_preset_apply(self):
-        out = self.store.apply_preset("claude-bench")
+        out = self.store.apply_preset("claude-sonnet-5")
         self.assertEqual(out["model_backend"], "generic")
         self.assertIn("claude", out["model"].lower())
 

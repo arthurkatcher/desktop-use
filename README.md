@@ -81,13 +81,13 @@ Cloud computer-use products hide the loop: closed runtimes, opaque decisions, sc
 - **Interrupt contract**: stop, take-control, and mid-flight messages all discard an in-flight model decision at the step boundary (`skipped` / not executed), never half-applied.
 - **Idle after done**: when the agent emits `done`, the session parks as `idle` instead of tearing down. A message resumes the loop; the session ends on **End** (status `complete`), **Stop** (status `stopped`), hard **error**, or **idle timeout** (default 60s / 1 min since last action or user message). Hitting `--max-steps` also parks idle (send a message for another burst).
 
-### Operator console (`ui.py` + `home.html` + `ui.html`)
+### Operator console (`desktop_use/ui.py` + `desktop_use/static/`)
 
-- Sessions home with status badges, thumbnails, model, step count, duration.
-- Live noVNC of the agent desktop (local stack or remote `--stream-url`).
-- Snapshot timeline: one PNG per step with scrubber and keyboard navigation.
-- Streaming transcript over SSE with reconnect dedupe on monotonic `seq`.
-- Stop, take control / release, mid-flight and post-done messages (message bar stays while idle); light and dark themes.
+- Console home with three panels: **Sessions** (launcher, paginated list with status badges, thumbnails, model, step count, duration), **Screens** (fleet cards), **Settings** (presets, backend-aware model picker, loop and control defaults).
+- Per-session console at `/s/<id>`: live noVNC of the agent desktop (local stack or remote stream), snapshot timeline with scrubber and keyboard navigation, streaming transcript over SSE with reconnect dedupe on monotonic `seq`, stop / take control / release, mid-flight and post-done messages; light and dark themes.
+- Per-screen console at `/screen/<id>`: full-viewport live stream, take control / release with TTL countdown, soft power on/off, health retry, lease banner deep-linking the holding session.
+- Screen registry (`desktop_use/screen_store.py`): external sandboxes with health-gated create, soft power, exclusive lease per session, and a control FSM (`none` / `ai` / `human` + TTL) bridged into the session interrupt contract.
+- Settings (`desktop_use/settings_store.py`): `settings.json` defaults for new sessions (CLI > env > settings > hardcoded), presets (Holo3 35B / Holo3 122B / Claude Sonnet 5 / Claude Opus 5), secret redaction on API responses.
 
 ### Remote sandbox (`remote.py`)
 
@@ -178,7 +178,7 @@ export STREAM_URL=ws://127.0.0.1:6080/websockify   # required if host maps a non
 # export SANDBOX_TOKEN=…                           # if the sandbox requires auth
 
 # Probe capture + input against the sandbox (no model)
-uv run agent.py --sandbox-url "$SANDBOX_URL" --probe
+uv run python -m desktop_use.agent --sandbox-url "$SANDBOX_URL" --probe
 ```
 
 ### B. Hosted CLI and console against a sandbox URL
@@ -193,14 +193,14 @@ export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
 export SANDBOX_URL=http://127.0.0.1:7090
 export STREAM_URL=ws://127.0.0.1:6080/websockify
 
-uv run agent.py --sandbox-url "$SANDBOX_URL" \
+uv run python -m desktop_use.agent --sandbox-url "$SANDBOX_URL" \
   --base-url "$OPENAI_BASE_URL" \
   --model anthropic/claude-sonnet-4.5 \
   --model-backend generic \
   --max-steps 25 \
   "Open a terminal and run uname -a"
 
-uv run ui.py \
+uv run python -m desktop_use.ui \
   --sandbox-url "$SANDBOX_URL" \
   --stream-url "$STREAM_URL" \
   --base-url "$OPENAI_BASE_URL" \
@@ -219,13 +219,13 @@ export OPENAI_BASE_URL="https://api.hcompany.ai/v1"
 export SANDBOX_URL=http://127.0.0.1:7090
 export STREAM_URL=ws://127.0.0.1:6080/websockify
 
-uv run agent.py --sandbox-url "$SANDBOX_URL" \
+uv run python -m desktop_use.agent --sandbox-url "$SANDBOX_URL" \
   --base-url "$OPENAI_BASE_URL" \
   --model holo3-1-35b-a3b \
   --model-backend auto \
   "Open a terminal and run echo hi"
 
-uv run ui.py \
+uv run python -m desktop_use.ui \
   --sandbox-url "$SANDBOX_URL" \
   --stream-url "$STREAM_URL" \
   --base-url "$OPENAI_BASE_URL" \
@@ -252,11 +252,11 @@ sudo apt install xserver-xephyr openbox scrot xterm x11vnc novnc websockify
 ```
 
 ```bash
-uv run agent.py --probe
-uv run agent.py "open a terminal and run ls"
+uv run python -m desktop_use.agent --probe
+uv run python -m desktop_use.agent "open a terminal and run ls"
 
 export OPENAI_API_KEY="…"
-uv run ui.py \
+uv run python -m desktop_use.ui \
   --base-url https://openrouter.ai/api/v1 \
   --model anthropic/claude-haiku-4.5 \
   --max-steps 25
@@ -358,7 +358,7 @@ Full policy: [SECURITY.md](SECURITY.md).
 
 ```bash
 # unit tests (no display, no API keys required)
-uv run --with pytest --with httpx --with python-xlib python -m pytest tests/ -v
+uv run --with pytest python -m pytest tests/ -v
 
 # optional live smoke against a running sandbox
 SANDBOX_URL=http://127.0.0.1:7090 uv run evals/remote_smoke.py
@@ -372,10 +372,11 @@ Data-plane changes belong in [desktop-sandbox](https://github.com/arthurkatcher/
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/` | sessions home |
+| GET | `/` | console home (sessions / screens / settings) |
 | GET | `/s/<id>` | session console |
-| GET | `/sessions` | JSON list of all sessions |
-| POST | `/run` `{"task": "..."}` | launch a session (409 if one is running) |
+| GET | `/screen/<id>` | screen live view + operator control |
+| GET | `/sessions`, `/api/sessions` | sessions JSON (paginated envelope on `/api/sessions`) |
+| POST | `/run` `{"task": "...", "screen_id": null}` | launch a session (409 if one is running) |
 | POST | `/stop` | abort at the next step boundary (`status=stopped`) |
 | POST | `/end` | clean close at the next step boundary (`status=complete`) |
 | POST | `/message` `{"text": "..."}` | queue a mid-flight instruction |
@@ -383,6 +384,13 @@ Data-plane changes belong in [desktop-sandbox](https://github.com/arthurkatcher/
 | POST | `/control/release` `{"continue": bool}` | hand back and resume, or stop |
 | GET | `/events?sid=<id>` | SSE stream: full replay then live tail |
 | GET | `/shot/<sid>/<n>.png` | any step screenshot |
+| GET/PUT | `/api/settings` | read / update defaults (secrets redacted on read) |
+| POST | `/api/settings/preset` `{"id": "..."}` | apply a model preset |
+| GET/POST | `/api/screens` | list (filters + pagination) / create (health-gated) |
+| GET/PATCH/DELETE | `/api/screens/<id>` | read / update / delete (delete blocked while leased) |
+| POST | `/api/screens/<id>/on` · `/off` · `/health` | soft power + health probe |
+| POST | `/api/screens/<id>/control/take` · `/release` | human control with TTL; take pauses a leasing session |
+| GET | `/static/*` | console css/js assets |
 
 ## Troubleshooting
 

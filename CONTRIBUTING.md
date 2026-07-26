@@ -15,9 +15,9 @@ git clone https://github.com/arthurkatcher/desktop-use-hosted.git
 cd desktop-use-hosted
 
 # uv resolves script dependencies (httpx, python-xlib) from file headers
-uv run agent.py --probe          # local capture + input (needs Xephyr stack)
+uv run python -m desktop_use.agent --probe          # local capture + input (needs Xephyr stack)
 # or, with a running desktop-sandbox:
-# uv run agent.py --sandbox-url http://127.0.0.1:7090 --probe
+# uv run python -m desktop_use.agent --sandbox-url http://127.0.0.1:7090 --probe
 ```
 
 **Local Xephyr path** needs the system packages listed in the README (Xephyr, openbox, scrot, xterm; plus x11vnc, novnc, websockify for local console live view).
@@ -37,7 +37,7 @@ export OPENAI_BASE_URL="…"
 ### Unit tests (mandatory for PRs that touch logic)
 
 ```bash
-uv run --with pytest --with httpx --with python-xlib python -m pytest tests/ -v
+uv run --with pytest python -m pytest tests/ -v
 ```
 
 These cover dual backends (detect, scale, tool map, request bodies, normalize), remote client behavior (mocked httpx), stream URL inject, prefill/spawn/display refuse, and CLI flag routing. **PRs that change `model_backends.py`, `remote.py`, `agent.py`, or `ui.py` must keep the suite green.**

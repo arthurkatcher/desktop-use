@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import httpx
 
-import ui as ui_mod
-from settings_store import SettingsStore
+from desktop_use import ui as ui_mod
+from desktop_use.settings_store import SettingsStore
 
 
 class FakeDesk:

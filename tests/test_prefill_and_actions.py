@@ -8,14 +8,14 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from agent import (
+from desktop_use.agent import (
     AGENT_ACTION_TYPES,
     _is_real_display,
     _supports_assistant_prefill,
     ask_model,
     execute,
 )
-from remote import RemoteDesktop
+from desktop_use.remote import RemoteDesktop
 
 
 class TestPrefill(unittest.TestCase):

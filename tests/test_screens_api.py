@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import httpx
 
-import ui as ui_mod
-from remote import probe_health
-from screen_store import ScreenStore
-from settings_store import SettingsStore
+from desktop_use import ui as ui_mod
+from desktop_use.remote import probe_health
+from desktop_use.screen_store import ScreenStore
+from desktop_use.settings_store import SettingsStore
 
 
 class HealthOK(BaseHTTPRequestHandler):

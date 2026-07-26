@@ -24,31 +24,31 @@ DEFAULTS: dict[str, Any] = {
     "default_screen_id": None,
     "presets": [
         {
-            "id": "holo",
-            "label": "Holo production",
+            "id": "holo-fast",
+            "label": "Holo3 35B · fast",
             "model_backend": "holo",
-            "model": "holo-2",
-            "base_url": "",
+            "model": "holo3-1-35b-a3b",
+            "base_url": "https://api.hcompany.ai/v1",
         },
         {
-            "id": "generic-a",
-            "label": "Generic / OpenRouter A",
+            "id": "holo-large",
+            "label": "Holo3 122B · larger",
+            "model_backend": "holo",
+            "model": "holo3-122b-a10b",
+            "base_url": "https://api.hcompany.ai/v1",
+        },
+        {
+            "id": "claude-sonnet-5",
+            "label": "Claude Sonnet 5",
             "model_backend": "generic",
-            "model": "qwen/qwen2.5-vl-72b-instruct",
+            "model": "anthropic/claude-sonnet-5",
             "base_url": "https://openrouter.ai/api/v1",
         },
         {
-            "id": "generic-b",
-            "label": "Generic slot B",
+            "id": "claude-opus-5",
+            "label": "Claude Opus 5",
             "model_backend": "generic",
-            "model": "qwen2.5vl",
-            "base_url": "http://localhost:11434/v1",
-        },
-        {
-            "id": "claude-bench",
-            "label": "Claude bench",
-            "model_backend": "generic",
-            "model": "anthropic/claude-sonnet-4",
+            "model": "anthropic/claude-opus-5",
             "base_url": "https://openrouter.ai/api/v1",
         },
     ],
@@ -172,19 +172,3 @@ def public_settings(data: dict[str, Any]) -> dict[str, Any]:
     out["api_key_set"] = bool(str(key).strip())
     out["api_key"] = ""  # never echo stored key
     return out
-
-
-def merge_runtime_cfg(cli_cfg, settings: dict[str, Any],
-                      env: dict[str, str] | None = None):
-    """Build effective cfg fields: CLI/env already on cli_cfg win over settings.
-
-    Call after argparse. For fields that still hold their argparse default
-    and env was empty at parse time, fill from settings.json.
-    This helper only fills when the attribute equals the known argparse
-    default and settings has a value — used when wiring /run.
-    """
-    env = env if env is not None else os.environ
-    # Model: prefer settings when env LOCAL_LOOP_MODEL was not the source
-    # and we want next /run to read settings. For live /run we always
-    # re-read settings for model/max_steps/idle when not overridden.
-    return settings
