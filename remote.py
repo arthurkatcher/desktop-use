@@ -58,6 +58,74 @@ def sanitize_remote_action(action: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def probe_health(
+    base_url: str,
+    token: str = "",
+    timeout: float = 5.0,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Soft health check for ScreenStore create/retry.
+
+    Never raises for transport/HTTP failure; returns
+    ``{"ok": False, "error": "...", "code": "..."}`` instead.
+    Success returns ok True plus width/height/display/stream_ws when present.
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return {"ok": False, "error": "sandbox_url empty", "code": "bad_url"}
+    headers: dict[str, str] = {}
+    tok = (token or "").strip()
+    if tok:
+        headers["X-Sandbox-Token"] = tok
+        headers["Authorization"] = f"Bearer {tok}"
+    owns = client is None
+    http = client or httpx.Client(timeout=timeout)
+    try:
+        try:
+            r = http.get(f"{url}/health", headers=headers)
+        except httpx.HTTPError as e:
+            return {
+                "ok": False,
+                "error": f"unreachable: {e}",
+                "code": "unreachable",
+            }
+        if r.status_code in (401, 403):
+            return {
+                "ok": False,
+                "error": f"auth failed ({r.status_code})",
+                "code": "auth",
+            }
+        if r.status_code >= 400:
+            return {
+                "ok": False,
+                "error": f"HTTP {r.status_code}",
+                "code": f"http_{r.status_code}",
+            }
+        try:
+            body = r.json()
+        except json.JSONDecodeError:
+            return {
+                "ok": False,
+                "error": "non-JSON health body",
+                "code": "bad_body",
+            }
+        if isinstance(body, dict) and body.get("ok") is False:
+            return {
+                "ok": False,
+                "error": str(body.get("error") or "unhealthy"),
+                "code": "unhealthy",
+            }
+        out: dict[str, Any] = {"ok": True}
+        if isinstance(body, dict):
+            for k in ("display", "width", "height", "stream_ws"):
+                if k in body and body[k] is not None:
+                    out[k] = body[k]
+        return out
+    finally:
+        if owns:
+            http.close()
+
+
 class RemoteDesktop:
     """Desktop-compatible surface backed by a sandbox API.
 
@@ -77,6 +145,8 @@ class RemoteDesktop:
         timeout: float = 60.0,
         client: httpx.Client | None = None,
         http: httpx.Client | None = None,  # alias used by unit tests
+        *,
+        skip_health: bool = False,
     ):
         self.base_url = base_url.rstrip("/")
         self.token = (token or "").strip()
@@ -85,6 +155,13 @@ class RemoteDesktop:
         provided = client if client is not None else http
         self._owns_client = provided is None
         self._http = provided or httpx.Client(timeout=timeout)
+        if skip_health:
+            host = urlparse(self.base_url).hostname or "remote"
+            port = urlparse(self.base_url).port or ""
+            self.name = f"remote:{port}" if port else f"remote:{host}"
+            self.width = DEFAULT_WIDTH
+            self.height = DEFAULT_HEIGHT
+            return
         health = self.health()
         if health.get("ok") is False:
             raise RuntimeError(

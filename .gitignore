@@ -1,6 +1,10 @@
 # session recordings: screenshots + event logs of the machine
 sessions/
 
+# screen registry + local settings (operator machine state)
+screens/
+settings.json
+
 # secrets and local env (never commit)
 .env
 .env.*

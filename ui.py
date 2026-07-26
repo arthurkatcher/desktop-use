@@ -35,10 +35,15 @@ import httpx
 
 from agent import Desktop, ManagedEnv, ask_model, execute, require_binaries
 from model_backends import resolve_model_backend
+from remote import probe_health
+from screen_store import ScreenStore
+from settings_store import SettingsStore, public_settings
 
 NOVNC_DIR = "/usr/share/novnc"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SESS_DIR = os.path.join(HERE, "sessions")
+SCREENS_DIR = os.path.join(HERE, "screens")
+SETTINGS_PATH = os.path.join(HERE, "settings.json")
 
 MIME = {".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
         ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
@@ -96,7 +101,8 @@ class SessionStore:
         real = os.path.realpath(path)
         return real == root or real.startswith(root + os.sep)
 
-    def create(self, task: str, model: str) -> dict:
+    def create(self, task: str, model: str,
+               screen_id: str | None = None) -> dict:
         with self.lock:
             sid = time.strftime("%Y%m%d-%H%M%S")
             n = 0
@@ -106,7 +112,8 @@ class SessionStore:
             os.makedirs(self._dir(sid))
             meta = {"id": sid, "task": task, "model": model,
                     "status": "running", "started": time.time(),
-                    "ended": None, "steps": 0}
+                    "ended": None, "steps": 0,
+                    "screen_id": screen_id}
             self._write_meta(meta)
             return meta
 
@@ -136,11 +143,34 @@ class SessionStore:
 
     def list(self) -> list[dict]:
         metas = []
-        for name in os.listdir(SESS_DIR):
+        try:
+            names = os.listdir(SESS_DIR)
+        except OSError:
+            names = []
+        for name in names:
             meta = self.meta(name)
             if meta:
                 metas.append(meta)
         return sorted(metas, key=lambda m: m["started"], reverse=True)
+
+    def list_page(self, *, limit: int | None = None, offset: int = 0,
+                  status: str | None = None,
+                  q: str | None = None) -> tuple[list[dict], int]:
+        rows = self.list()
+        if status:
+            rows = [r for r in rows if r.get("status") == status]
+        if q:
+            ql = q.lower()
+            rows = [r for r in rows if (
+                ql in (r.get("task") or "").lower()
+                or ql in (r.get("id") or "").lower()
+            )]
+        total = len(rows)
+        if offset:
+            rows = rows[offset:]
+        if limit is not None:
+            rows = rows[: max(0, int(limit))]
+        return rows, total
 
     def append_event(self, sid: str, event: dict):
         with open(os.path.join(self._dir(sid), "events.jsonl"), "a") as f:
@@ -220,11 +250,15 @@ class Runner:
     last desktop action or user message).
     """
 
-    def __init__(self, desk: Desktop, bus: Bus, store: SessionStore, cfg):
-        self.desk = desk
+    def __init__(self, desk, bus: Bus, store: SessionStore, cfg,
+                 screens: ScreenStore | None = None,
+                 settings: SettingsStore | None = None):
+        self.desk = desk  # boot desk (local or CLI sandbox); may be None later
         self.bus = bus
         self.store = store
         self.cfg = cfg
+        self.screens = screens
+        self.settings = settings
         self.busy = threading.Lock()
         self.stop_event = threading.Event()   # abort: status stopped
         self.end_event = threading.Event()    # clean close: status complete
@@ -233,8 +267,41 @@ class Runner:
         self.pending_msgs: list[str] = []     # mid-flight user messages
         self.wake_event = threading.Event()   # message / control wake idle
         self.active_sid: str | None = None
+        self.active_screen_id: str | None = None
+        self._session_desk = None  # per-run desk override
 
-    def launch(self, task: str) -> str | None:
+    def _effective_run_cfg(self) -> dict:
+        """Defaults from settings for model/max_steps/idle when set."""
+        out = {
+            "model": self.cfg.model,
+            "base_url": self.cfg.base_url,
+            "api_key": self.cfg.api_key,
+            "model_backend": getattr(self.cfg, "model_backend", "auto"),
+            "max_steps": self.cfg.max_steps,
+            "idle_timeout": float(
+                getattr(self.cfg, "idle_timeout", 60) or 60),
+        }
+        if self.settings is None:
+            return out
+        s = self.settings.get()
+        # Prefer settings for next launch defaults (CLI still sets process
+        # defaults at boot; settings.json updates apply without restart).
+        if s.get("model"):
+            out["model"] = s["model"]
+        if s.get("base_url"):
+            out["base_url"] = s["base_url"]
+        if s.get("model_backend"):
+            out["model_backend"] = s["model_backend"]
+        if s.get("max_steps"):
+            out["max_steps"] = int(s["max_steps"])
+        if s.get("idle_timeout") is not None:
+            out["idle_timeout"] = float(s["idle_timeout"])
+        key = (s.get("api_key") or "").strip()
+        if key:
+            out["api_key"] = key
+        return out
+
+    def launch(self, task: str, screen_id: str | None = None) -> str | None:
         if not self.busy.acquire(blocking=False):
             return None
         self.stop_event.clear()
@@ -243,11 +310,56 @@ class Runner:
         self.wake_event.clear()
         with self.msg_lock:
             self.pending_msgs = []
-        meta = self.store.create(task, self.cfg.model)
-        self.active_sid = meta["id"]
-        threading.Thread(target=self._run, args=(meta["id"], task),
+        run_cfg = self._effective_run_cfg()
+        session_desk = self.desk
+        acquired_screen = None
+        sid = None
+        try:
+            if screen_id and self.screens is not None:
+                probed = self.screens.probe(screen_id)
+                if not probed or probed.get("status") != "on":
+                    raise ValueError(
+                        "screen not healthy/on; fix or pick another")
+            meta = self.store.create(
+                task, run_cfg["model"], screen_id=screen_id)
+            sid = meta["id"]
+            if screen_id and self.screens is not None:
+                self.screens.acquire_lease(screen_id, sid)
+                acquired_screen = screen_id
+                sm = self.screens.get(screen_id)
+                conn = (sm or {}).get("connection") or {}
+                from remote import RemoteDesktop
+                session_desk = RemoteDesktop(
+                    conn.get("sandbox_url") or "",
+                    token=conn.get("token") or "",
+                    stream_url=conn.get("stream_url"),
+                )
+            elif self.desk is None:
+                raise RuntimeError(
+                    "no desktop: provide screen_id or start with "
+                    "--sandbox-url / local mode")
+        except Exception:
+            if acquired_screen and self.screens is not None:
+                try:
+                    self.screens.release_lease(acquired_screen, sid)
+                except Exception:
+                    pass
+            if sid:
+                try:
+                    self.store.update(
+                        sid, status="error", ended=time.time())
+                except Exception:
+                    pass
+            self.busy.release()
+            raise
+
+        self.active_sid = sid
+        self.active_screen_id = screen_id
+        self._session_desk = session_desk
+        self._run_overrides = run_cfg
+        threading.Thread(target=self._run, args=(sid, task),
                          daemon=True).start()
-        return meta["id"]
+        return sid
 
     def _user_close(self) -> str | None:
         """If the operator closed the session: ``stopped`` or ``ended``."""
@@ -276,7 +388,25 @@ class Runner:
         return f"/shot/{sid}/{name}.png"
 
     def _idle_timeout_s(self) -> float:
+        ov = getattr(self, "_run_overrides", None) or {}
+        if "idle_timeout" in ov:
+            return float(ov["idle_timeout"] or 60)
         return float(getattr(self.cfg, "idle_timeout", 60) or 60)
+
+    def _sync_pause_from_screen(self) -> None:
+        """Bridge screen.control.holder == human → pause_event."""
+        if not self.screens or not self.active_screen_id:
+            return
+        self.screens.expire_human_control()
+        meta = self.screens.get(self.active_screen_id)
+        if not meta:
+            return
+        holder = (meta.get("control") or {}).get("holder")
+        if holder == "human":
+            self.pause_event.set()
+        else:
+            if self.pause_event.is_set() and holder in ("ai", "none"):
+                self.pause_event.clear()
 
     def _wait_control(self, sid: str, seq: int, history: list[str]) -> int:
         """Block while the user holds the desktop; note the handback."""
@@ -343,15 +473,23 @@ class Runner:
             self.wake_event.clear()
 
     def _run(self, sid: str, task: str):
-        desk, cfg, store = self.desk, self.cfg, self.store
+        desk = self._session_desk or self.desk
+        cfg = self.cfg
+        store = self.store
+        ov = getattr(self, "_run_overrides", None) or {}
+        model = ov.get("model", cfg.model)
+        base_url = ov.get("base_url", cfg.base_url)
+        api_key = ov.get("api_key", cfg.api_key)
+        backend_flag = ov.get(
+            "model_backend", getattr(cfg, "model_backend", "auto"))
+        max_steps = int(ov.get("max_steps", cfg.max_steps))
+        screen_id = self.active_screen_id
         seq = 0
-        backend_flag = getattr(cfg, "model_backend", "auto")
-        resolved = resolve_model_backend(
-            cfg.base_url, cfg.model, backend_flag)
+        resolved = resolve_model_backend(base_url, model, backend_flag)
         idle_s = self._idle_timeout_s()
         seq = self._emit(sid, seq, t="run_start", task=task,
-                         max_steps=cfg.max_steps, backend=resolved,
-                         idle_timeout=idle_s)
+                         max_steps=max_steps, backend=resolved,
+                         idle_timeout=idle_s, screen_id=screen_id)
         history: list[str] = []
         prev_png: bytes | None = None
         last_action: dict | None = None
@@ -367,10 +505,15 @@ class Runner:
                     # One active burst: up to max_steps until done / stop /
                     # error. Then park idle instead of ending the session.
                     burst_end = None  # "done" | "budget" | "stop" | "error"
-                    for _ in range(cfg.max_steps):
+                    for _ in range(max_steps):
+                        self._sync_pause_from_screen()
                         if self.pause_event.is_set():
                             seq = self._wait_control(sid, seq, history)
                             last_activity = time.time()
+                            if (self.screens and screen_id
+                                    and not self._user_close()):
+                                # after human release, re-sync
+                                self._sync_pause_from_screen()
                         seq, _ = self._drain_msgs(sid, seq, history)
                         close = self._user_close()
                         if close:
@@ -384,8 +527,28 @@ class Runner:
                                 reason=close, summary=summary)
                             return
                         step += 1
+                        # AI action gate: do not execute if not allowed
+                        if (self.screens and screen_id
+                                and not self.screens.ai_may_act(
+                                    screen_id, sid)
+                                and not self.pause_event.is_set()):
+                            # parked with lease (idle control none) —
+                            # wait for message path via idle, not here
+                            self.screens.set_control_ai(screen_id, sid)
+                        if (self.screens and screen_id
+                                and self.screens.get(screen_id)
+                                and (self.screens.get(screen_id)
+                                     .get("control") or {}
+                                     ).get("holder") == "human"):
+                            self.pause_event.set()
+                            seq = self._emit(sid, seq, t="skipped", n=step)
+                            seq = self._wait_control(sid, seq, history)
+                            last_activity = time.time()
+                            continue
                         png = desk.screenshot_png()
                         store.update(sid, steps=step, status="running")
+                        if self.screens and screen_id:
+                            self.screens.set_control_ai(screen_id, sid)
                         seq = self._emit(sid, seq, t="step", n=step,
                                          shot=self._shot(sid, str(step), png))
                         decision = None
@@ -393,8 +556,8 @@ class Runner:
                         for attempt in (1, 2, 3):
                             try:
                                 decision = ask_model(
-                                    http, cfg.base_url, cfg.api_key,
-                                    cfg.model, task, png, history,
+                                    http, base_url, api_key,
+                                    model, task, png, history,
                                     (desk.width, desk.height),
                                     prev_png=prev_png, complaint=complaint,
                                     backend=backend_flag)
@@ -443,6 +606,7 @@ class Runner:
                                 sid, seq, t="done", ok=ok, terminal=True,
                                 reason=close, summary=summary)
                             return
+                        self._sync_pause_from_screen()
                         if self.pause_event.is_set():
                             # user grabbed the desktop mid-decision: discard
                             # the pending action, wait, then re-read screen
@@ -459,6 +623,15 @@ class Runner:
                             last_activity = time.time()
                             if msgs:
                                 task = msgs[-1]
+                            prev_png = png
+                            continue
+
+                        if (self.screens and screen_id
+                                and not self.screens.ai_may_act(
+                                    screen_id, sid)):
+                            seq = self._emit(sid, seq, t="skipped", n=step)
+                            seq = self._wait_control(sid, seq, history)
+                            last_activity = time.time()
                             prev_png = png
                             continue
 
@@ -507,7 +680,7 @@ class Runner:
                         last_activity = time.time()
                         seq = self._emit(
                             sid, seq, t="note",
-                            msg=(f"step budget ({cfg.max_steps}) reached "
+                            msg=(f"step budget ({max_steps}) reached "
                                  "— idle. Send a message to continue, "
                                  "End to finish, or Stop to abort."))
 
@@ -515,6 +688,8 @@ class Runner:
                         # defensive: loop exited without setting reason
                         burst_end = "budget"
 
+                    if self.screens and screen_id:
+                        self.screens.set_control_idle(screen_id, sid)
                     seq, reason, last_activity = self._wait_idle(
                         sid, seq, history, last_activity)
                     if reason == "stopped":
@@ -547,6 +722,8 @@ class Runner:
                                             desk.screenshot_png()))
                         return
                     # resume: inject queued messages and keep going
+                    if self.screens and screen_id:
+                        self.screens.set_control_ai(screen_id, sid)
                     seq, msgs = self._drain_msgs(sid, seq, history)
                     last_activity = time.time()
                     if msgs:
@@ -561,11 +738,30 @@ class Runner:
         finally:
             seq = self._emit(sid, seq, t="run_end")
             self.store.update(sid, status=status, ended=time.time())
+            if self.screens and screen_id:
+                try:
+                    self.screens.release_lease(screen_id, sid)
+                except Exception:
+                    pass
+            if (self._session_desk is not None
+                    and self._session_desk is not self.desk
+                    and hasattr(self._session_desk, "close")):
+                try:
+                    self._session_desk.close()
+                except Exception:
+                    pass
+            self._session_desk = None
             self.active_sid = None
+            self.active_screen_id = None
             self.busy.release()
 
 
-def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
+def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg,
+                 screens: ScreenStore | None = None,
+                 settings: SettingsStore | None = None):
+    screens = screens or getattr(runner, "screens", None)
+    settings = settings or getattr(runner, "settings", None)
+
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -580,42 +776,126 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
             self.end_headers()
             self.wfile.write(body)
 
-        def _page(self, name: str):
+        def _json(self, code: int, obj):
+            self._send(code, json.dumps(obj).encode(), "application/json")
+
+        def _read_json(self):
+            length = int(self.headers.get("Content-Length", 0))
+            return json.loads(self.rfile.read(length) or b"{}")
+
+        def _page(self, name: str, stream_url: str | None = None):
             with open(os.path.join(HERE, name), "rb") as f:
                 page = f.read()
-            remote = bool(getattr(cfg, "sandbox_url", None))
-            stream = (getattr(cfg, "stream_url", None) or "").strip()
+            remote = bool(getattr(cfg, "sandbox_url", None) or stream_url)
+            stream = (stream_url
+                      or (getattr(cfg, "stream_url", None) or "")).strip()
             page = inject_stream_url(
                 page, stream if remote else None, cfg.ws_port, remote)
             self._send(200, page, "text/html")
 
+        def _qs(self, url):
+            return {k: v[0] for k, v in parse_qs(url.query).items() if v}
+
         def do_GET(self):
             url = urlparse(self.path)
-            if url.path in ("/", "/index.html"):
+            path = url.path
+            qs = self._qs(url)
+            if path in ("/", "/index.html"):
                 self._page("home.html")
-            elif url.path.startswith("/s/"):
-                sid = url.path[len("/s/"):]
-                if store.meta(sid) is None:
+            elif path.startswith("/s/"):
+                sid = path[len("/s/"):]
+                meta = store.meta(sid)
+                if meta is None:
                     self._send(404, b"unknown session", "text/plain")
                 else:
-                    self._page("ui.html")
-            elif url.path == "/sessions":
-                rows = store.list()
+                    stream = None
+                    if meta.get("screen_id") and screens:
+                        sm = screens.get(meta["screen_id"])
+                        if sm:
+                            stream = ((sm.get("connection") or {})
+                                      .get("stream_url")
+                                      or (sm.get("health") or {})
+                                      .get("stream_ws"))
+                    self._page("ui.html", stream_url=stream)
+            elif path in ("/sessions", "/api/sessions"):
+                limit = qs.get("limit")
+                offset = int(qs.get("offset") or 0)
+                status = qs.get("status") or None
+                q = qs.get("q") or None
+                lim = int(limit) if limit not in (None, "") else None
+                rows, total = store.list_page(
+                    limit=lim, offset=offset, status=status, q=q)
                 for row in rows:
                     row["active"] = row["id"] == runner.active_sid
-                self._send(200, json.dumps(rows).encode(), "application/json")
-            elif url.path == "/events":
+                # legacy /sessions: bare list when no pagination params
+                if path == "/sessions" and limit is None and offset == 0 \
+                        and not status and not q:
+                    self._json(200, rows)
+                else:
+                    self._json(200, {
+                        "items": rows, "total": total,
+                        "limit": lim, "offset": offset,
+                    })
+            elif path == "/api/settings":
+                if settings is None:
+                    self._json(503, {"error": "settings unavailable"})
+                else:
+                    self._json(200, public_settings(settings.get()))
+            elif path == "/api/screens":
+                if screens is None:
+                    self._json(503, {"error": "screens unavailable"})
+                    return
+                limit = qs.get("limit")
+                lim = int(limit) if limit not in (None, "") else 10
+                offset = int(qs.get("offset") or 0)
+                rows, total = screens.list(
+                    limit=lim, offset=offset,
+                    status=qs.get("status") or None,
+                    lease=qs.get("lease") or None,
+                    q=qs.get("q") or None)
+                self._json(200, {
+                    "items": rows, "total": total,
+                    "limit": lim, "offset": offset,
+                })
+            elif path.startswith("/api/screens/") and path.endswith(
+                    "/stream-info"):
+                sid = path[len("/api/screens/"):-len("/stream-info")]
+                if not screens:
+                    self._json(503, {"error": "screens unavailable"})
+                    return
+                meta = screens.get(sid)
+                if not meta:
+                    self._json(404, {"error": "unknown screen"})
+                    return
+                stream = ((meta.get("connection") or {}).get("stream_url")
+                          or (meta.get("health") or {}).get("stream_ws"))
+                self._json(200, {
+                    "stream_url": stream,
+                    "sandbox_url": (meta.get("connection") or {})
+                    .get("sandbox_url"),
+                })
+            elif path.startswith("/api/screens/"):
+                sid = path[len("/api/screens/"):]
+                if "/" in sid or not screens:
+                    self._json(404, {"error": "not found"})
+                    return
+                meta = screens.get(sid)
+                if not meta:
+                    self._json(404, {"error": "unknown screen"})
+                else:
+                    self._json(200, meta)
+            elif path == "/events":
                 sid = parse_qs(url.query).get("sid", [""])[0]
                 self._sse(sid)
-            elif url.path.startswith("/shot/"):
-                parts = url.path[len("/shot/"):].removesuffix(".png").split("/")
+            elif path.startswith("/shot/"):
+                parts = path[len("/shot/"):].removesuffix(".png").split("/")
                 png = store.shot(*parts) if len(parts) == 2 else None
                 if png is None:
                     self._send(404, b"not found", "text/plain")
                 else:
                     self._send(200, png, "image/png")
-            elif url.path.startswith("/novnc/"):
-                rel = url.path[len("/novnc/"):]
+            elif path.startswith("/novnc/"):
+                rel = path[len("/novnc/"):]
                 if not rel or rel.startswith("/") or "\\" in rel:
                     self._send(404, b"not found", "text/plain")
                     return
@@ -638,16 +918,72 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
             else:
                 self._send(404, b"not found", "text/plain")
 
-        def do_POST(self):
-            if self.path == "/message":
-                length = int(self.headers.get("Content-Length", 0))
+        def do_PUT(self):
+            if self.path == "/api/settings":
+                if settings is None:
+                    self._json(503, {"error": "settings unavailable"})
+                    return
                 try:
-                    text = str(json.loads(self.rfile.read(length))
-                               ["text"]).strip()
+                    payload = self._read_json()
+                    data = settings.save(payload)
+                    self._json(200, public_settings(data))
+                except ValueError as e:
+                    self._json(400, {"error": str(e)})
+                except Exception:
+                    self._json(400, {"error": "bad request"})
+                return
+            self._send(404, b"not found", "text/plain")
+
+        def do_PATCH(self):
+            if not self.path.startswith("/api/screens/") or not screens:
+                self._send(404, b"not found", "text/plain")
+                return
+            sid = self.path[len("/api/screens/"):]
+            if "/" in sid:
+                self._send(404, b"not found", "text/plain")
+                return
+            try:
+                payload = self._read_json()
+                kw = {}
+                if "name" in payload:
+                    kw["name"] = str(payload["name"]).strip()
+                if "connection" in payload:
+                    kw["connection"] = payload["connection"]
+                if "profile" in payload:
+                    kw["profile"] = payload["profile"]
+                meta = screens.update_fields(sid, **kw)
+                if meta is None:
+                    self._json(404, {"error": "unknown screen"})
+                else:
+                    self._json(200, meta)
+            except Exception as e:
+                self._json(400, {"error": str(e)})
+
+        def do_DELETE(self):
+            if not self.path.startswith("/api/screens/") or not screens:
+                self._send(404, b"not found", "text/plain")
+                return
+            sid = self.path[len("/api/screens/"):]
+            if "/" in sid:
+                self._send(404, b"not found", "text/plain")
+                return
+            try:
+                ok = screens.delete(sid)
+                if not ok:
+                    self._json(404, {"error": "unknown screen"})
+                else:
+                    self._json(200, {"ok": True})
+            except ValueError as e:
+                self._json(409, {"error": str(e)})
+
+        def do_POST(self):
+            path = self.path
+            if path == "/message":
+                try:
+                    text = str(self._read_json()["text"]).strip()
                     assert text
                 except Exception:
-                    self._send(400, b'{"error":"bad request"}',
-                               "application/json")
+                    self._json(400, {"error": "bad request"})
                     return
                 sid = runner.active_sid
                 if sid:
@@ -656,71 +992,215 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
                     runner.wake_event.set()
                     bus.emit({"t": "message_sent", "sid": sid,
                               "text": text, "ts": time.time()})
-                self._send(200, json.dumps({"queued": sid is not None})
-                           .encode(), "application/json")
+                self._json(200, {"queued": sid is not None})
                 return
-            if self.path == "/control/take":
+            if path == "/control/take":
                 sid = runner.active_sid
+                screen_id = runner.active_screen_id
                 if sid:
                     runner.pause_event.set()
                     runner.wake_event.set()
+                    expires = None
+                    if screens and screen_id:
+                        ttl = 120
+                        if settings:
+                            ttl = int(settings.get().get(
+                                "control_ttl_s") or 120)
+                        try:
+                            sm = screens.take_control(
+                                screen_id, via="session",
+                                session_id=sid, ttl_s=ttl)
+                            expires = (sm.get("control") or {}).get(
+                                "expires_at")
+                        except Exception:
+                            pass
                     bus.emit({"t": "control_taken", "sid": sid,
-                              "ts": time.time()})
-                self._send(200, json.dumps({"paused": sid is not None})
-                           .encode(), "application/json")
+                              "ts": time.time(), "screen_id": screen_id,
+                              "expires_at": expires})
+                self._json(200, {
+                    "paused": sid is not None,
+                    "screen_id": screen_id,
+                })
                 return
-            if self.path == "/control/release":
-                length = int(self.headers.get("Content-Length", 0))
+            if path == "/control/release":
                 try:
-                    resume = bool(json.loads(self.rfile.read(length))
-                                  .get("continue", True))
+                    body = self._read_json()
+                    resume = bool(body.get("continue", True))
                 except Exception:
                     resume = True
+                sid = runner.active_sid
+                screen_id = runner.active_screen_id
                 if not resume:
                     runner.stop_event.set()
+                if screens and screen_id:
+                    try:
+                        screens.release_control(
+                            screen_id, resume_ai=resume and bool(sid))
+                    except Exception:
+                        pass
                 runner.pause_event.clear()
                 runner.wake_event.set()
-                self._send(200, b'{"ok":true}', "application/json")
+                self._json(200, {"ok": True})
                 return
-            if self.path == "/stop":
+            if path == "/stop":
                 sid = runner.active_sid
                 if sid:
                     runner.stop_event.set()
                     runner.wake_event.set()
                     bus.emit({"t": "stop_requested", "sid": sid,
                               "ts": time.time()})
-                self._send(200, b'{"ok":true}', "application/json")
+                self._json(200, {"ok": True})
                 return
-            if self.path == "/end":
-                # Clean close: same step-boundary interrupt as Stop, but
-                # session status is complete (success) not stopped.
+            if path == "/end":
                 sid = runner.active_sid
                 if sid:
                     runner.end_event.set()
                     runner.wake_event.set()
                     bus.emit({"t": "end_requested", "sid": sid,
                               "ts": time.time()})
-                self._send(200, b'{"ok":true}', "application/json")
+                self._json(200, {"ok": True})
                 return
-            if self.path != "/run":
+            if path == "/api/settings/preset":
+                if settings is None:
+                    self._json(503, {"error": "settings unavailable"})
+                    return
+                try:
+                    pid = str(self._read_json()["id"])
+                    data = settings.apply_preset(pid)
+                    self._json(200, public_settings(data))
+                except KeyError as e:
+                    self._json(404, {"error": str(e)})
+                except Exception as e:
+                    self._json(400, {"error": str(e)})
+                return
+            if path == "/api/screens" and screens is not None:
+                try:
+                    payload = self._read_json()
+                    name = str(payload.get("name") or "").strip()
+                    connection = payload.get("connection") or {
+                        "sandbox_url": payload.get("sandbox_url"),
+                        "stream_url": payload.get("stream_url"),
+                        "token": payload.get("token") or "",
+                        "mode": "external",
+                    }
+                    ttl = 120
+                    if settings:
+                        ttl = int(settings.get().get("control_ttl_s") or 120)
+                    meta = screens.create(
+                        name, connection,
+                        profile=payload.get("profile"),
+                        ttl_s=ttl)
+                    self._json(201, meta)
+                except ValueError as e:
+                    self._json(400, {"error": str(e)})
+                except Exception as e:
+                    self._json(400, {"error": str(e)})
+                return
+            if screens and path.startswith("/api/screens/"):
+                rest = path[len("/api/screens/"):]
+                parts = rest.split("/")
+                sid = parts[0]
+                action = parts[1] if len(parts) > 1 else ""
+                try:
+                    if action == "on":
+                        self._json(200, screens.turn_on(sid))
+                        return
+                    if action == "off":
+                        self._json(200, screens.turn_off(sid))
+                        return
+                    if action == "health":
+                        out = screens.probe(sid)
+                        if out is None:
+                            self._json(404, {"error": "unknown screen"})
+                        else:
+                            self._json(200, out)
+                        return
+                    if action == "control" and len(parts) >= 3:
+                        sub = parts[2]
+                        body = {}
+                        try:
+                            body = self._read_json()
+                        except Exception:
+                            body = {}
+                        if sub == "take":
+                            ttl = body.get("ttl_s")
+                            if ttl is None and settings:
+                                ttl = settings.get().get("control_ttl_s")
+                            meta = screens.take_control(
+                                sid, via=body.get("via") or "ui",
+                                session_id=body.get("session_id"),
+                                ttl_s=ttl)
+                            # if leased to active session, pause runner
+                            lease = (meta.get("lease") or {}).get(
+                                "session_id")
+                            if (lease and lease == runner.active_sid
+                                    and runner.active_screen_id == sid):
+                                runner.pause_event.set()
+                                runner.wake_event.set()
+                                bus.emit({
+                                    "t": "control_taken", "sid": lease,
+                                    "ts": time.time(), "screen_id": sid,
+                                    "expires_at": (meta.get("control") or {}
+                                                   ).get("expires_at"),
+                                })
+                            self._json(200, meta)
+                            return
+                        if sub == "release":
+                            cont = bool(body.get("continue", True))
+                            meta = screens.release_control(
+                                sid, resume_ai=cont)
+                            if (runner.active_screen_id == sid
+                                    and runner.active_sid):
+                                if not cont:
+                                    runner.stop_event.set()
+                                runner.pause_event.clear()
+                                runner.wake_event.set()
+                            self._json(200, meta)
+                            return
+                except KeyError:
+                    self._json(404, {"error": "unknown screen"})
+                    return
+                except ValueError as e:
+                    self._json(409, {"error": str(e)})
+                    return
+                except Exception as e:
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(404, {"error": "not found"})
+                return
+            if path != "/run":
                 self._send(404, b"not found", "text/plain")
                 return
-            length = int(self.headers.get("Content-Length", 0))
             try:
-                payload = json.loads(self.rfile.read(length))
+                payload = self._read_json()
                 task = str(payload["task"]).strip()
                 assert task
+                screen_id = payload.get("screen_id") or None
+                if screen_id:
+                    screen_id = str(screen_id)
             except Exception:
-                self._send(400, b'{"error":"bad request"}', "application/json")
+                self._json(400, {"error": "bad request"})
                 return
-            sid = runner.launch(task)
+            # default screen from settings when screens registered
+            if not screen_id and settings and screens:
+                ds = settings.get().get("default_screen_id")
+                if ds and screens.get(ds):
+                    screen_id = ds
+            try:
+                sid = runner.launch(task, screen_id=screen_id)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+                return
             if sid is None:
-                body = json.dumps({"error": "a session is already running",
-                                   "active": runner.active_sid})
-                self._send(409, body.encode(), "application/json")
+                self._json(409, {
+                    "error": "a session is already running",
+                    "active": runner.active_sid,
+                })
             else:
-                self._send(200, json.dumps({"id": sid}).encode(),
-                           "application/json")
+                self._json(200, {"id": sid, "screen_id": screen_id})
 
         def _sse_write(self, event: dict):
             self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
@@ -738,17 +1218,34 @@ def make_handler(bus: Bus, runner: Runner, store: SessionStore, cfg):
             live = runner.active_sid == sid
             q = bus.subscribe(sid) if live else None
             try:
-                remote = bool(getattr(cfg, "sandbox_url", None))
+                desk = (runner._session_desk if live and runner._session_desk
+                        else runner.desk)
+                remote = bool(
+                    getattr(cfg, "sandbox_url", None)
+                    or meta.get("screen_id")
+                    or getattr(desk, "is_remote", False))
+                dname = getattr(desk, "name", "?") if desk else "?"
+                dwidth = getattr(desk, "width", 1280) if desk else 1280
+                dheight = getattr(desk, "height", 800) if desk else 800
                 hello = {"t": "hello", "model": meta["model"],
-                         "display": runner.desk.name,
-                         "width": runner.desk.width,
-                         "height": runner.desk.height,
+                         "display": dname,
+                         "width": dwidth,
+                         "height": dheight,
                          "max_steps": cfg.max_steps, "live": live,
                          "status": meta["status"],
                          "idle_timeout": float(
                              getattr(cfg, "idle_timeout", 60) or 60),
-                         "mode": "remote" if remote else "local"}
+                         "mode": "remote" if remote else "local",
+                         "screen_id": meta.get("screen_id")}
                 stream = (getattr(cfg, "stream_url", None) or "").strip()
+                if meta.get("screen_id") and screens:
+                    sm = screens.get(meta["screen_id"])
+                    if sm:
+                        stream = (
+                            (sm.get("connection") or {}).get("stream_url")
+                            or (sm.get("health") or {}).get("stream_ws")
+                            or stream or "")
+                        stream = (stream or "").strip()
                 if remote and stream:
                     hello["stream_url"] = stream
                 self._sse_write(hello)
@@ -831,6 +1328,46 @@ def main():
     if not os.path.isdir(NOVNC_DIR):
         sys.exit(f"noVNC not found at {NOVNC_DIR} (apt install novnc)")
 
+    settings = SettingsStore(SETTINGS_PATH)
+    screens = ScreenStore(SCREENS_DIR, health_fn=probe_health)
+
+    def _control_timer():
+        while True:
+            time.sleep(1.0)
+            try:
+                changed = screens.expire_human_control()
+                for sm in changed:
+                    lease = (sm.get("lease") or {}).get("session_id")
+                    if not lease:
+                        continue
+                    # wake runner if this was the active lease
+                    # (release human → ai)
+                    pass
+            except Exception:
+                pass
+
+    threading.Thread(target=_control_timer, daemon=True).start()
+
+    # Seed default external screen from CLI sandbox if registry empty
+    if cfg.sandbox_url:
+        rows, total = screens.list()
+        if total == 0:
+            try:
+                screens.create(
+                    "Default sandbox",
+                    {
+                        "mode": "external",
+                        "sandbox_url": cfg.sandbox_url,
+                        "stream_url": cfg.stream_url,
+                        "token": cfg.sandbox_token or "",
+                    },
+                    ttl_s=int(settings.get().get("control_ttl_s") or 120),
+                )
+                print("seeded screen registry from --sandbox-url")
+            except Exception as e:
+                print(f"warning: could not seed screen: {e}",
+                      file=sys.stderr)
+
     if cfg.sandbox_url:
         from remote import RemoteDesktop
         # Normalize whitespace-only stream so health stream_ws can fill in.
@@ -844,17 +1381,16 @@ def main():
             cfg.stream_url = (desk.stream_url or "").strip() or ""
         bus = Bus()
         store = SessionStore()
-        runner = Runner(desk, bus, store, cfg)
+        runner = Runner(desk, bus, store, cfg, screens=screens,
+                        settings=settings)
         server = ThreadingHTTPServer(
             ("127.0.0.1", cfg.port),
-            make_handler(bus, runner, store, cfg))
+            make_handler(bus, runner, store, cfg, screens, settings))
         print(f"console: http://localhost:{cfg.port}  (remote sandbox)")
         print(f"sandbox: {cfg.sandbox_url}")
         if cfg.stream_url:
             print(f"stream:  {cfg.stream_url}")
         else:
-            # Remote mode never starts local websockify; empty stream leaves
-            # the page on dead ws://hostname:ws_port. Fail loud for operators.
             print(
                 "warning: no stream_url after sandbox health "
                 "(stream_ws empty and --stream-url/STREAM_URL unset); "
@@ -898,11 +1434,12 @@ def main():
             desk = Desktop(display)
             bus = Bus()
             store = SessionStore()
-            runner = Runner(desk, bus, store, cfg)
+            runner = Runner(desk, bus, store, cfg, screens=screens,
+                            settings=settings)
 
             server = ThreadingHTTPServer(
                 ("127.0.0.1", cfg.port),
-                make_handler(bus, runner, store, cfg))
+                make_handler(bus, runner, store, cfg, screens, settings))
             print(f"console: http://localhost:{cfg.port}  (Ctrl+C to stop)")
             if cfg.task:
                 sid = runner.launch(cfg.task)

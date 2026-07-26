@@ -3,9 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>desktop-use sessions</title>
+<title>desktop-use console</title>
 <script>
-  // apply the stored theme before first paint to avoid a flash
   const stored = localStorage.getItem('du-theme');
   if (stored) document.documentElement.dataset.theme = stored;
 </script>
@@ -57,51 +56,69 @@
   html, body { height: 100%; }
   body {
     background: var(--tube); color: var(--paper); font-family: var(--sans);
-    display: flex; flex-direction: column; overflow: hidden;
+    display: flex; overflow: hidden;
   }
   ::selection { background: var(--amber-deep); color: var(--on-amber); }
 
+  .sidebar {
+    width: 200px; flex: none; display: flex; flex-direction: column;
+    border-right: 1px solid var(--line); background: var(--chassis);
+    padding: 16px 12px;
+  }
+  .side-mark {
+    font-family: var(--mono); font-weight: 600; font-size: 12px;
+    letter-spacing: .16em; padding: 8px 10px 20px; display: flex;
+    align-items: center; gap: 8px;
+  }
+  .lamp { width: 8px; height: 8px; border-radius: 50%;
+          background: var(--muted); flex: none; }
+  .lamp.thinking { background: var(--amber);
+                   animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: .3; } }
+  .nav-btn {
+    text-align: left; font-family: var(--mono); font-size: 11px;
+    letter-spacing: .12em; padding: 10px 12px; margin-bottom: 4px;
+    background: transparent; border: 1px solid transparent;
+    color: var(--muted); border-radius: 6px; cursor: pointer;
+  }
+  .nav-btn:hover { color: var(--paper); border-color: var(--line); }
+  .nav-btn.active {
+    color: var(--amber); border-color: var(--amber-deep);
+    background: var(--amber-glow);
+  }
+  .side-foot { margin-top: auto; padding: 8px; }
+  #theme-btn {
+    width: 100%; height: 32px; border-radius: 6px;
+    font-size: 14px; line-height: 1;
+    background: none; border: 1px solid var(--line); color: var(--muted);
+    cursor: pointer;
+  }
+  #theme-btn:hover { border-color: var(--amber-deep); color: var(--paper); }
+
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   header {
     display: flex; align-items: center; gap: 28px;
     padding: 0 20px; height: 54px; flex: none;
     border-bottom: 1px solid var(--line); background: var(--chassis);
     font-family: var(--mono); font-size: 12px;
   }
-  .wordmark { display: flex; align-items: center; gap: 10px;
-              font-weight: 600; letter-spacing: .18em; font-size: 13px; }
-  .lamp { width: 9px; height: 9px; border-radius: 50%;
-          background: var(--muted); flex: none; }
-  .lamp.thinking { background: var(--amber);
-                   animation: breathe 1.6s ease-in-out infinite; }
-  @keyframes breathe { 50% { opacity: .3; } }
-  .head-meta { margin-left: auto; display: flex; gap: 24px;
-               color: var(--muted); font-size: 11px; letter-spacing: .1em; }
-  #theme-btn {
-    width: 32px; height: 32px; border-radius: 6px; flex: none;
-    font-size: 14px; line-height: 1;
-    background: none; border: 1px solid var(--line); color: var(--muted);
-    cursor: pointer; transition: border-color .15s, color .15s;
-  }
-  #theme-btn:hover { border-color: var(--amber-deep); color: var(--paper); }
-  #theme-btn:focus-visible { outline: 2px solid var(--paper);
-                             outline-offset: 2px; }
+  .head-meta { margin-left: auto; color: var(--muted); font-size: 11px;
+               letter-spacing: .1em; }
 
   .wrap { flex: 1; overflow-y: auto;
           scrollbar-width: thin;
           scrollbar-color: var(--chassis-3) transparent; }
-  .wrap::-webkit-scrollbar { width: 8px; }
-  .wrap::-webkit-scrollbar-thumb { background: var(--chassis-3);
-                                   border-radius: 4px; }
-  .inner { max-width: 780px; margin: 0 auto; padding: 44px 24px 80px; }
+  .inner { max-width: 820px; margin: 0 auto; padding: 36px 24px 80px; }
 
   .eyebrow { font-family: var(--mono); font-size: 9px; letter-spacing: .22em;
              color: var(--muted); margin-bottom: 10px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
 
-  /* ── launcher ───────────────────────────────────── */
   .launcher {
     background: var(--chassis);
     border: 1px solid var(--line); border-radius: 12px;
-    padding: 20px; margin-bottom: 42px;
+    padding: 20px; margin-bottom: 28px;
   }
   .prompt-box { position: relative; }
   .prompt-box::before {
@@ -109,34 +126,51 @@
     font-family: var(--mono); font-size: 13px; color: var(--amber-deep);
     pointer-events: none;
   }
-  textarea {
-    width: 100%; min-height: 76px; resize: vertical; display: block;
+  textarea, input[type=text], input[type=password], input[type=number], select {
+    width: 100%; display: block;
     background: var(--tube); color: var(--paper);
     border: 1px solid var(--line); border-radius: 8px;
     font-family: var(--mono); font-size: 13px; line-height: 1.55;
-    padding: 11px 14px 11px 32px;
+    padding: 10px 14px;
     transition: border-color .15s, box-shadow .15s;
   }
-  textarea::placeholder { color: var(--faint); }
-  textarea:focus {
+  textarea {
+    min-height: 76px; resize: vertical; padding-left: 32px;
+  }
+  textarea::placeholder, input::placeholder { color: var(--faint); }
+  textarea:focus, input:focus, select:focus {
     outline: none; border-color: var(--amber-deep);
     box-shadow: 0 0 0 1px var(--amber-deep);
   }
-  .launch-row { display: flex; align-items: center; gap: 12px;
-                margin-top: 13px; }
-  #launch-btn {
+  .field { margin-bottom: 12px; }
+  .field label {
+    display: block; font-family: var(--mono); font-size: 10px;
+    letter-spacing: .14em; color: var(--muted); margin-bottom: 6px;
+  }
+  .launch-row, .row-actions {
+    display: flex; align-items: center; gap: 12px; margin-top: 13px;
+    flex-wrap: wrap;
+  }
+  .btn, #launch-btn, #save-settings, #create-screen {
     display: inline-flex; align-items: center; gap: 8px;
-    font-family: var(--mono); font-weight: 600; font-size: 12.5px;
-    letter-spacing: .08em; padding: 11px 20px;
+    font-family: var(--mono); font-weight: 600; font-size: 12px;
+    letter-spacing: .08em; padding: 10px 16px;
     background: var(--amber); color: var(--on-amber);
     border: none; border-radius: 7px; cursor: pointer;
-    transition: background .15s;
   }
-  #launch-btn:hover:not(:disabled) { background: var(--amber-hover); }
-  #launch-btn:disabled { background: var(--chassis-3); color: var(--muted);
-                         cursor: default; }
-  #launch-btn:focus-visible { outline: 2px solid var(--paper);
-                              outline-offset: 2px; }
+  .btn:hover:not(:disabled), #launch-btn:hover:not(:disabled) {
+    background: var(--amber-hover);
+  }
+  .btn:disabled, #launch-btn:disabled {
+    background: var(--chassis-3); color: var(--muted); cursor: default;
+  }
+  .btn.ghost {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--line);
+  }
+  .btn.ghost:hover { color: var(--paper); border-color: var(--amber-deep); }
+  .btn.danger { background: transparent; color: var(--bad);
+                border: 1px solid color-mix(in srgb, var(--bad) 50%, var(--line)); }
   .hint { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
   .hint a { color: var(--amber); text-decoration: none; }
   .kbd {
@@ -144,11 +178,17 @@
     border: 1px solid var(--line); border-bottom-width: 2px;
     border-radius: 4px; padding: 2px 6px; margin-left: auto;
   }
+  .filters {
+    display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 16px;
+  }
+  .filters input, .filters select { width: auto; min-width: 140px; }
 
-  /* ── session rows ───────────────────────────────── */
-  .sessions-head { display: flex; align-items: baseline; gap: 12px; }
-  .sessions-head .count { font-family: var(--mono); font-size: 10px;
-                          color: var(--faint); }
+  .sessions-head, .section-head {
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .sessions-head .count, .section-head .count {
+    font-family: var(--mono); font-size: 10px; color: var(--faint);
+  }
   .row {
     display: flex; align-items: center; gap: 16px;
     padding: 13px 16px; margin-bottom: 10px;
@@ -158,9 +198,7 @@
     border: 1px solid var(--line-soft); border-radius: 10px;
     cursor: pointer; text-decoration: none; color: inherit;
     transition: border-color .15s, transform .12s;
-    animation: rise .28s ease both;
   }
-  @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
   .row:hover { border-color: var(--line); transform: translateX(3px); }
   .row.active { border-color: var(--amber-deep); }
   .thumb {
@@ -176,71 +214,199 @@
     display: -webkit-box; -webkit-line-clamp: 2;
     -webkit-box-orient: vertical; overflow: hidden;
   }
-  .row-sub { display: flex; gap: 14px; margin-top: 6px;
+  .row-sub { display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap;
              font-family: var(--mono); font-size: 10.5px;
-             color: var(--faint); letter-spacing: .06em;
-             white-space: nowrap; }
+             color: var(--faint); letter-spacing: .06em; }
   .badge {
     flex: none; font-family: var(--mono); font-size: 9.5px;
     letter-spacing: .14em; padding: 4px 9px; border-radius: 4px;
     border: 1px solid var(--line);
   }
-  .badge.running  { color: var(--amber); border-color: var(--amber-deep);
-                    animation: breathe 1.6s ease-in-out infinite; }
-  /* idle / ended = wait or clean close — amber family, not error red */
+  .badge.running  { color: var(--amber); border-color: var(--amber-deep); }
   .badge.idle, .badge.ended {
     color: var(--amber); border-color: var(--amber-deep);
   }
   .badge.complete { color: var(--ok); border-color:
                     color-mix(in srgb, var(--ok) 50%, var(--line)); }
-  .badge.stopped, .badge.incomplete, .badge.error {
+  .badge.stopped, .badge.incomplete, .badge.error, .badge.off {
     color: var(--bad); border-color:
     color-mix(in srgb, var(--bad) 45%, var(--line)); }
-  .badge.idle_timeout {
+  .badge.on { color: var(--ok); border-color:
+              color-mix(in srgb, var(--ok) 50%, var(--line)); }
+  .badge.idle_timeout, .badge.human, .badge.ai, .badge.none {
     color: var(--amber); border-color: var(--amber-deep);
   }
+  .badge.leased { color: var(--amber); border-color: var(--amber-deep); }
+  .badge.free { color: var(--muted); }
 
   .empty {
     padding: 30px 22px; border: 1px dashed var(--line); border-radius: 10px;
     color: var(--muted); font-size: 12.5px; line-height: 1.65;
   }
-
+  .detail {
+    border: 1px solid var(--line); border-radius: 12px;
+    background: var(--chassis); padding: 18px; margin-top: 16px;
+  }
+  .flash { font-family: var(--mono); font-size: 11px; color: var(--ok);
+           margin-top: 8px; min-height: 1.2em; }
+  .flash.err { color: var(--bad); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) {
+    .sidebar { width: 64px; }
+    .nav-btn { font-size: 0; padding: 12px; }
+    .nav-btn::first-letter { font-size: 11px; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
   @media (prefers-reduced-motion: reduce) {
-    .lamp.thinking, .badge.running, .row { animation: none; }
-    .row, #launch-btn { transition: none; }
+    .lamp.thinking, .row { animation: none; }
   }
 </style>
 </head>
 <body>
 
+<aside class="sidebar">
+  <div class="side-mark"><span class="lamp" id="lamp"></span>DESKTOP·USE</div>
+  <button class="nav-btn active" data-nav="sessions">SESSIONS</button>
+  <button class="nav-btn" data-nav="screens">SCREENS</button>
+  <button class="nav-btn" data-nav="settings">SETTINGS</button>
+  <div class="side-foot">
+    <button id="theme-btn" title="Toggle light/dark theme">◐</button>
+  </div>
+</aside>
+
+<div class="main">
 <header>
-  <div class="wordmark"><span class="lamp" id="lamp"></span>DESKTOP·USE</div>
   <div class="head-meta"><span id="head-state">SESSIONS</span></div>
-  <button id="theme-btn" title="Toggle light/dark theme">◐</button>
 </header>
 
 <div class="wrap"><div class="inner">
 
-  <div class="eyebrow">NEW SESSION</div>
-  <div class="launcher">
-    <div class="prompt-box">
-      <textarea id="task" spellcheck="false"
-        placeholder="Describe what the agent should do on the desktop…"></textarea>
+  <!-- ── Sessions ─────────────────────────────────── -->
+  <section class="panel active" id="panel-sessions">
+    <div class="eyebrow">NEW SESSION</div>
+    <div class="launcher">
+      <div class="prompt-box">
+        <textarea id="task" spellcheck="false"
+          placeholder="Describe what the agent should do on the desktop…"></textarea>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label for="screen-pick">SCREEN</label>
+        <select id="screen-pick">
+          <option value="">(local / boot desk)</option>
+        </select>
+      </div>
+      <div class="launch-row">
+        <button id="launch-btn">LAUNCH SESSION</button>
+        <span class="hint" id="hint"></span>
+        <span class="kbd">⌃ ↵</span>
+      </div>
     </div>
-    <div class="launch-row">
-      <button id="launch-btn">LAUNCH SESSION</button>
-      <span class="hint" id="hint"></span>
-      <span class="kbd">⌃ ↵</span>
-    </div>
-  </div>
 
-  <div class="sessions-head">
-    <div class="eyebrow">SESSIONS</div>
-    <span class="count" id="count"></span>
-  </div>
-  <div id="list"></div>
+    <div class="sessions-head">
+      <div class="eyebrow">SESSIONS</div>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="filters">
+      <select id="sess-status">
+        <option value="">all status</option>
+        <option>running</option><option>idle</option><option>complete</option>
+        <option>stopped</option><option>error</option><option>ended</option>
+        <option>idle_timeout</option>
+      </select>
+      <input type="text" id="sess-q" placeholder="filter task / id">
+    </div>
+    <div id="list"></div>
+    <div class="row-actions">
+      <button class="btn ghost" id="sess-more" style="display:none">LOAD MORE</button>
+    </div>
+  </section>
+
+  <!-- ── Screens ──────────────────────────────────── -->
+  <section class="panel" id="panel-screens">
+    <div class="eyebrow">ADD SCREEN (EXTERNAL)</div>
+    <div class="launcher">
+      <div class="grid2">
+        <div class="field"><label>NAME</label>
+          <input type="text" id="scr-name" placeholder="Work desktop"></div>
+        <div class="field"><label>SANDBOX URL</label>
+          <input type="text" id="scr-url" placeholder="http://127.0.0.1:7090"></div>
+        <div class="field"><label>STREAM URL</label>
+          <input type="text" id="scr-stream" placeholder="ws://127.0.0.1:6080"></div>
+        <div class="field"><label>TOKEN</label>
+          <input type="password" id="scr-token" placeholder="optional"></div>
+      </div>
+      <div class="launch-row">
+        <button id="create-screen">CREATE (HEALTH GATE)</button>
+        <span class="hint" id="scr-hint">fails without saving if /health fails</span>
+      </div>
+      <div class="flash" id="scr-flash"></div>
+    </div>
+
+    <div class="section-head">
+      <div class="eyebrow">SCREENS</div>
+      <span class="count" id="scr-count"></span>
+    </div>
+    <div class="filters">
+      <select id="scr-status">
+        <option value="">all power</option>
+        <option value="on">on</option>
+        <option value="off">off</option>
+        <option value="error">error</option>
+      </select>
+      <select id="scr-lease">
+        <option value="">all lease</option>
+        <option value="free">free</option>
+        <option value="leased">leased</option>
+      </select>
+      <input type="text" id="scr-q" placeholder="filter name / host">
+    </div>
+    <div id="scr-list"></div>
+    <div class="row-actions">
+      <button class="btn ghost" id="scr-more" style="display:none">LOAD MORE</button>
+    </div>
+    <div class="detail" id="scr-detail" style="display:none"></div>
+  </section>
+
+  <!-- ── Settings ─────────────────────────────────── -->
+  <section class="panel" id="panel-settings">
+    <div class="eyebrow">DEFAULTS FOR NEW WORK</div>
+    <div class="launcher">
+      <div class="field"><label>PRESET</label>
+        <select id="set-preset"><option value="">custom</option></select>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>MODEL BACKEND</label>
+          <select id="set-backend">
+            <option value="auto">auto</option>
+            <option value="generic">generic</option>
+            <option value="holo">holo</option>
+          </select>
+        </div>
+        <div class="field"><label>MODEL</label>
+          <input type="text" id="set-model"></div>
+        <div class="field"><label>BASE URL</label>
+          <input type="text" id="set-base"></div>
+        <div class="field"><label>API KEY (local store)</label>
+          <input type="password" id="set-key" placeholder="leave blank to keep"></div>
+        <div class="field"><label>MAX STEPS</label>
+          <input type="number" id="set-steps" min="1"></div>
+        <div class="field"><label>IDLE TIMEOUT (s)</label>
+          <input type="number" id="set-idle" min="1"></div>
+        <div class="field"><label>CONTROL TTL (s)</label>
+          <input type="number" id="set-ttl" min="1"></div>
+        <div class="field"><label>DEFAULT SCREEN ID</label>
+          <input type="text" id="set-screen" placeholder="scr-…"></div>
+      </div>
+      <div class="launch-row">
+        <button id="save-settings">SAVE SETTINGS</button>
+        <span class="hint" id="set-key-hint"></span>
+      </div>
+      <div class="flash" id="set-flash"></div>
+    </div>
+  </section>
 
 </div></div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -260,36 +426,79 @@ function dur(m) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-let anyRunning = false;
-let lastPayload = '';
-let firstRender = true;
+/* ── nav ─────────────────────────────────────────── */
+let nav = 'sessions';
+document.querySelectorAll('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    nav = btn.dataset.nav;
+    document.querySelectorAll('.nav-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.nav === nav));
+    document.querySelectorAll('.panel').forEach(p =>
+      p.classList.toggle('active', p.id === 'panel-' + nav));
+    $('head-state').textContent = nav.toUpperCase();
+    if (nav === 'sessions') loadSessions(true);
+    if (nav === 'screens') loadScreens(true);
+    if (nav === 'settings') loadSettings();
+  });
+});
 
-async function load() {
-  const rows = await (await fetch('/sessions')).json();
-  // re-render only when something changed - otherwise the 5s poll would
-  // rebuild the list, replay animations, and refetch every thumbnail
-  const payload = JSON.stringify(rows);
-  if (payload === lastPayload) return;
-  lastPayload = payload;
-  anyRunning = rows.some(r => r.active);
+/* ── sessions ────────────────────────────────────── */
+const PAGE = 10;
+let sessOffset = 0;
+let sessRows = [];
+let sessTotal = 0;
+let anyRunning = false;
+let lastSessKey = '';
+
+async function loadScreenPicker() {
+  try {
+    const data = await (await fetch('/api/screens?limit=50&status=on&lease=free')).json();
+    const items = data.items || [];
+    const eligible = items.filter(s => (s.control || {}).holder !== 'human');
+    const sel = $('screen-pick');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">(local / boot desk)</option>' +
+      eligible.map(s =>
+        `<option value="${esc(s.id)}">${esc(s.name)} — ${esc(s.id)}</option>`
+      ).join('');
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  } catch (e) { /* screens API may 503 in odd boots */ }
+}
+
+async function loadSessions(reset) {
+  if (reset) { sessOffset = 0; sessRows = []; lastSessKey = ''; }
+  const status = $('sess-status').value;
+  const q = $('sess-q').value.trim();
+  const url = new URL('/api/sessions', location.origin);
+  url.searchParams.set('limit', PAGE);
+  url.searchParams.set('offset', sessOffset);
+  if (status) url.searchParams.set('status', status);
+  if (q) url.searchParams.set('q', q);
+  const data = await (await fetch(url)).json();
+  const items = data.items || data;
+  const total = data.total != null ? data.total : items.length;
+  if (reset) sessRows = items;
+  else sessRows = sessRows.concat(items);
+  sessTotal = total;
+  anyRunning = sessRows.some(r => r.active);
   $('lamp').className = 'lamp' + (anyRunning ? ' thinking' : '');
-  $('head-state').textContent = anyRunning ? 'SESSION RUNNING' : 'IDLE';
-  $('count').textContent = rows.length ? `${rows.length} total` : '';
+  if (nav === 'sessions')
+    $('head-state').textContent = anyRunning ? 'SESSION RUNNING' : 'SESSIONS';
+  $('count').textContent = sessTotal ? `${sessRows.length} / ${sessTotal}` : '';
   $('launch-btn').disabled = anyRunning;
   $('hint').innerHTML = anyRunning
     ? 'one session at a time — <a href="/s/' +
-      esc(rows.find(r => r.active).id) + '">watch the running one</a>'
+      esc(sessRows.find(r => r.active).id) + '">watch the running one</a>'
     : '';
+  $('sess-more').style.display =
+    sessRows.length < sessTotal ? 'inline-flex' : 'none';
 
-  if (!rows.length) {
+  if (!sessRows.length) {
     $('list').innerHTML = '<div class="empty">No sessions yet. ' +
-      'Describe a task above and launch the first one — the agent drives ' +
-      'a private desktop and every step is recorded here.</div>';
+      'Pick a screen (optional), describe a task, and launch.</div>';
     return;
   }
-  const anim = firstRender;
-  firstRender = false;
-  $('list').innerHTML = rows.map((m, i) => {
+  $('list').innerHTML = sessRows.map(m => {
     const status = m.active
       ? (m.status === 'idle' ? 'idle' : 'running')
       : m.status;
@@ -300,18 +509,18 @@ async function load() {
     const thumb = m.steps > 0
       ? `<span class="thumb" ${shot}></span>`
       : `<span class="thumb blank">NO IMG</span>`;
-    return `<a class="row${m.active ? ' active' : ''}" href="/s/${esc(m.id)}"
-              style="${anim
-                ? `animation-delay:${Math.min(i * 40, 400)}ms`
-                : 'animation:none'}">
+    const scr = m.screen_id
+      ? `<span>scr ${esc(m.screen_id)}</span>` : '';
+    return `<a class="row${m.active ? ' active' : ''}" href="/s/${esc(m.id)}">
       ${thumb}
       <span class="row-main">
         <span class="row-task">${esc(m.task)}</span>
         <span class="row-sub">
-          <span>${esc(m.model.split('/').pop())}</span>
-          <span>${m.steps} steps</span>
+          <span>${esc((m.model || '').split('/').pop())}</span>
+          <span>${m.steps || 0} steps</span>
           <span>${dur(m)}</span>
           <span>${ago(m.started)}</span>
+          ${scr}
         </span>
       </span>
       <span class="badge ${esc(status)}">${esc(status).toUpperCase()}</span>
@@ -319,26 +528,278 @@ async function load() {
   }).join('');
 }
 
+$('sess-more').addEventListener('click', () => {
+  sessOffset = sessRows.length;
+  loadSessions(false);
+});
+$('sess-status').addEventListener('change', () => loadSessions(true));
+let qTimer;
+$('sess-q').addEventListener('input', () => {
+  clearTimeout(qTimer);
+  qTimer = setTimeout(() => loadSessions(true), 250);
+});
+
 async function launch() {
   const task = $('task').value.trim();
   if (!task) { $('task').focus(); return; }
   $('launch-btn').disabled = true;
+  const body = { task };
+  const scr = $('screen-pick').value;
+  if (scr) body.screen_id = scr;
   const res = await fetch('/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (res.ok) location.href = '/s/' + data.id;
-  else { $('hint').textContent = data.error; $('launch-btn').disabled = false; }
+  else {
+    $('hint').textContent = data.error || 'launch failed';
+    $('launch-btn').disabled = false;
+  }
 }
 $('launch-btn').addEventListener('click', launch);
 $('task').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) launch();
 });
 
-load();
-setInterval(load, 5000);
+/* ── screens ─────────────────────────────────────── */
+let scrOffset = 0;
+let scrRows = [];
+let scrTotal = 0;
+let selectedScr = null;
+
+async function loadScreens(reset) {
+  if (reset) { scrOffset = 0; scrRows = []; }
+  const url = new URL('/api/screens', location.origin);
+  url.searchParams.set('limit', PAGE);
+  url.searchParams.set('offset', scrOffset);
+  const st = $('scr-status').value;
+  const lease = $('scr-lease').value;
+  const q = $('scr-q').value.trim();
+  if (st) url.searchParams.set('status', st);
+  if (lease) url.searchParams.set('lease', lease);
+  if (q) url.searchParams.set('q', q);
+  const data = await (await fetch(url)).json();
+  const items = data.items || [];
+  scrTotal = data.total || 0;
+  if (reset) scrRows = items;
+  else scrRows = scrRows.concat(items);
+  $('scr-count').textContent = scrTotal ? `${scrRows.length} / ${scrTotal}` : '';
+  $('scr-more').style.display =
+    scrRows.length < scrTotal ? 'inline-flex' : 'none';
+  if (!scrRows.length) {
+    $('scr-list').innerHTML = '<div class="empty">No screens yet. ' +
+      'Add an external sandbox URL above (health must pass).</div>';
+  } else {
+    $('scr-list').innerHTML = scrRows.map(s => {
+      const leaseId = (s.lease || {}).session_id;
+      const holder = (s.control || {}).holder || 'none';
+      return `<div class="row" data-id="${esc(s.id)}">
+        <span class="row-main">
+          <span class="row-task">${esc(s.name)}</span>
+          <span class="row-sub">
+            <span>${esc((s.connection || {}).sandbox_url || '')}</span>
+            <span>${esc(s.id)}</span>
+          </span>
+        </span>
+        <span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span>
+        <span class="badge ${leaseId ? 'leased' : 'free'}">${
+          leaseId ? 'LEASED' : 'FREE'}</span>
+        <span class="badge ${esc(holder)}">${esc(holder).toUpperCase()}</span>
+      </div>`;
+    }).join('');
+    $('scr-list').querySelectorAll('.row').forEach(el => {
+      el.addEventListener('click', () => openScreen(el.dataset.id));
+    });
+  }
+  loadScreenPicker();
+}
+
+$('scr-more').addEventListener('click', () => {
+  scrOffset = scrRows.length;
+  loadScreens(false);
+});
+$('scr-status').addEventListener('change', () => loadScreens(true));
+$('scr-lease').addEventListener('change', () => loadScreens(true));
+let sqTimer;
+$('scr-q').addEventListener('input', () => {
+  clearTimeout(sqTimer);
+  sqTimer = setTimeout(() => loadScreens(true), 250);
+});
+
+async function openScreen(id) {
+  selectedScr = id;
+  const s = await (await fetch('/api/screens/' + encodeURIComponent(id))).json();
+  const leaseId = (s.lease || {}).session_id;
+  const holder = (s.control || {}).holder || 'none';
+  const exp = (s.control || {}).expires_at;
+  let actions = '';
+  if (s.status === 'off')
+    actions += `<button class="btn" data-a="on">TURN ON</button>`;
+  if (s.status === 'on' || s.status === 'error')
+    actions += `<button class="btn ghost" data-a="off">TURN OFF</button>`;
+  actions += `<button class="btn ghost" data-a="health">RETRY HEALTH</button>`;
+  if (!leaseId && s.status === 'on') {
+    if (holder === 'human')
+      actions += `<button class="btn ghost" data-a="release">RELEASE CONTROL</button>`;
+    else
+      actions += `<button class="btn" data-a="take">TAKE CONTROL</button>`;
+  }
+  if (leaseId) {
+    actions += `<a class="btn" href="/s/${esc(leaseId)}">OPEN SESSION</a>`;
+    actions += `<a class="btn ghost" href="/s/${esc(leaseId)}">TAKE CONTROL IN SESSION</a>`;
+  }
+  if (!leaseId)
+    actions += `<button class="btn danger" data-a="del">DELETE</button>`;
+  const err = (s.last_error || {}).message
+    ? `<div class="flash err">${esc(s.last_error.message)}</div>` : '';
+  $('scr-detail').style.display = 'block';
+  $('scr-detail').innerHTML = `
+    <div class="eyebrow">SCREEN DETAIL</div>
+    <div class="row-task" style="margin-bottom:8px">${esc(s.name)}</div>
+    <div class="row-sub">
+      <span class="badge ${esc(s.status)}">${esc(s.status).toUpperCase()}</span>
+      <span class="badge ${leaseId ? 'leased' : 'free'}">${leaseId ? 'LEASED ' + esc(leaseId) : 'FREE'}</span>
+      <span class="badge ${esc(holder)}">INPUT ${esc(holder).toUpperCase()}</span>
+      ${exp ? `<span>expires ${esc(new Date(exp * 1000).toLocaleTimeString())}</span>` : ''}
+    </div>
+    <div class="row-sub" style="margin-top:10px">
+      <span>${esc((s.connection || {}).sandbox_url || '')}</span>
+    </div>
+    ${err}
+    <div class="row-actions">${actions}</div>
+    <div class="flash" id="scr-det-flash"></div>`;
+  $('scr-detail').querySelectorAll('[data-a]').forEach(btn => {
+    btn.addEventListener('click', () => screenAction(id, btn.dataset.a));
+  });
+}
+
+async function screenAction(id, a) {
+  const flash = () => $('scr-det-flash') || { textContent: '', className: '' };
+  try {
+    let res;
+    if (a === 'on') res = await fetch(`/api/screens/${id}/on`, { method: 'POST' });
+    else if (a === 'off') res = await fetch(`/api/screens/${id}/off`, { method: 'POST' });
+    else if (a === 'health') res = await fetch(`/api/screens/${id}/health`, { method: 'POST' });
+    else if (a === 'take') res = await fetch(`/api/screens/${id}/control/take`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ via: 'screens' }),
+    });
+    else if (a === 'release') res = await fetch(`/api/screens/${id}/control/release`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ continue: true }),
+    });
+    else if (a === 'del') {
+      res = await fetch(`/api/screens/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        $('scr-detail').style.display = 'none';
+        loadScreens(true);
+        return;
+      }
+    }
+    const data = await res.json();
+    if (!res.ok) {
+      const el = flash();
+      el.className = 'flash err';
+      el.textContent = data.error || 'failed';
+    }
+    loadScreens(true);
+    if (a !== 'del') openScreen(id);
+  } catch (e) {
+    const el = flash();
+    el.className = 'flash err';
+    el.textContent = String(e);
+  }
+}
+
+$('create-screen').addEventListener('click', async () => {
+  $('scr-flash').className = 'flash';
+  $('scr-flash').textContent = 'probing health…';
+  const res = await fetch('/api/screens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: $('scr-name').value.trim(),
+      connection: {
+        mode: 'external',
+        sandbox_url: $('scr-url').value.trim(),
+        stream_url: $('scr-stream').value.trim() || null,
+        token: $('scr-token').value,
+      },
+    }),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    $('scr-flash').textContent = 'created ' + data.id;
+    $('scr-name').value = '';
+    loadScreens(true);
+  } else {
+    $('scr-flash').className = 'flash err';
+    $('scr-flash').textContent = data.error || 'create failed';
+  }
+});
+
+/* ── settings ────────────────────────────────────── */
+async function loadSettings() {
+  const s = await (await fetch('/api/settings')).json();
+  $('set-backend').value = s.model_backend || 'auto';
+  $('set-model').value = s.model || '';
+  $('set-base').value = s.base_url || '';
+  $('set-key').value = '';
+  $('set-key').placeholder = s.api_key_set ? '(set — leave blank to keep)' : 'optional';
+  $('set-key-hint').textContent = s.api_key_set ? 'api key is stored' : '';
+  $('set-steps').value = s.max_steps ?? 15;
+  $('set-idle').value = s.idle_timeout ?? 60;
+  $('set-ttl').value = s.control_ttl_s ?? 120;
+  $('set-screen').value = s.default_screen_id || '';
+  const presets = s.presets || [];
+  $('set-preset').innerHTML = '<option value="">custom</option>' +
+    presets.map(p => `<option value="${esc(p.id)}">${esc(p.label || p.id)}</option>`).join('');
+}
+
+$('set-preset').addEventListener('change', async () => {
+  const id = $('set-preset').value;
+  if (!id) return;
+  const res = await fetch('/api/settings/preset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (res.ok) {
+    await loadSettings();
+    $('set-flash').className = 'flash';
+    $('set-flash').textContent = 'preset applied';
+  }
+});
+
+$('save-settings').addEventListener('click', async () => {
+  const body = {
+    model_backend: $('set-backend').value,
+    model: $('set-model').value.trim(),
+    base_url: $('set-base').value.trim(),
+    max_steps: Number($('set-steps').value),
+    idle_timeout: Number($('set-idle').value),
+    control_ttl_s: Number($('set-ttl').value),
+    default_screen_id: $('set-screen').value.trim() || null,
+  };
+  const key = $('set-key').value;
+  if (key) body.api_key = key;
+  const res = await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (res.ok) {
+    $('set-flash').className = 'flash';
+    $('set-flash').textContent = 'saved';
+    loadSettings();
+  } else {
+    $('set-flash').className = 'flash err';
+    $('set-flash').textContent = data.error || 'save failed';
+  }
+});
 
 /* ── theme ───────────────────────────────────────── */
 const effTheme = () => document.documentElement.dataset.theme
@@ -355,6 +816,13 @@ $('theme-btn').addEventListener('click', () => {
 matchMedia('(prefers-color-scheme: light)')
   .addEventListener('change', paintThemeBtn);
 paintThemeBtn();
+
+loadSessions(true);
+loadScreenPicker();
+setInterval(() => {
+  if (nav === 'sessions') loadSessions(true);
+  if (nav === 'screens') loadScreens(true);
+}, 5000);
 </script>
 </body>
 </html>
