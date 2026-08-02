@@ -1,4 +1,4 @@
-# desktop-use-hosted
+# desktop-use
 
 **Control plane for computer-use: a readable agent loop, an operator console, and optional remote Desktop API sandboxes.**
 
@@ -7,16 +7,16 @@
 [![Status](https://img.shields.io/badge/status-MVP-ffb454.svg)](#status)
 [![Version](https://img.shields.io/badge/version-0.0.1-63b981.svg)](CHANGELOG.md)
 
-`desktop-use-hosted` is the **control plane** of a split computer-use stack. A vision-language model decides actions; this repo runs the model loop, the web operator console, and either a local nested desktop or a remote [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) data plane.
+`desktop-use` is the **control plane** of a split computer-use stack. A vision-language model decides actions; this repo runs the model loop, the web operator console, and either a local nested desktop or a remote [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) data plane.
 
-It is the hosted / screen-link evolution of the local-only [desktop-use](https://github.com/arthurkatcher/desktop-use) reference: same interrupt contract, same append-only sessions, dual model backends (Holo structured harness and generic OpenAI-compatible VLMs).
+Split-stack evolution of an earlier local-only prototype: same interrupt contract, same append-only sessions, dual model backends (Holo structured harness and generic OpenAI-compatible VLMs).
 
 ```text
   Operator browser (127.0.0.1:7788)
         │ REST + SSE transcript          │ noVNC (local ws or remote stream)
         ▼                                ▼
   ┌─────────────────────────────────────────────────────────┐
-  │  desktop-use-hosted (this repo)                         │
+  │  desktop-use (this repo)                                │
   │  ui.py console · agent.py loop · model_backends.py      │
   │  sessions/ (events.jsonl + step PNGs)                   │
   └───────────────┬───────────────────────────┬─────────────┘
@@ -117,14 +117,13 @@ No database. Replays rebuild from these files alone.
 | Data plane | Isolated desktop, screenshot/action API, optional noVNC | [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) |
 | Model host | Vision LLM inference | Your endpoint (Holo API, OpenRouter, Ollama, vLLM, …) |
 
-Local mode keeps Xephyr on the same host as the console (same shape as upstream desktop-use). Remote mode is the production-shaped path: sandbox in Docker, control plane on the operator machine.
+Local mode keeps Xephyr on the same host as the console (everything on one host). Remote mode is the production-shaped path: sandbox in Docker, control plane on the operator machine.
 
 ## Related projects
 
 | Project | Role |
 |---|---|
 | **[desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox)** | Data plane companion. Docker-first nested desktop with HTTP Desktop API and noVNC. **Pair this control plane with that repo.** |
-| [desktop-use](https://github.com/arthurkatcher/desktop-use) | Original local-only reference (Xephyr on the operator machine, no remote API). |
 
 ## Dual model backends
 
@@ -170,8 +169,8 @@ Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/). Prefer **path A** 
 2. Clone and point this control plane at it.
 
 ```bash
-git clone https://github.com/arthurkatcher/desktop-use-hosted.git
-cd desktop-use-hosted
+git clone https://github.com/arthurkatcher/desktop-use.git
+cd desktop-use
 
 export SANDBOX_URL=http://127.0.0.1:7090
 export STREAM_URL=ws://127.0.0.1:6080/websockify   # required if host maps a non-default stream port
@@ -245,7 +244,7 @@ Health JSON may still advertise container-internal ports. When the host maps a d
 
 ### C. Local Xephyr only (no sandbox)
 
-Same path as upstream desktop-use. System packages on Debian/Ubuntu:
+System packages on Debian/Ubuntu:
 
 ```bash
 sudo apt install xserver-xephyr openbox scrot xterm x11vnc novnc websockify

@@ -1,5 +1,5 @@
 [project]
-name = "desktop-use-hosted"
+name = "desktop-use"
 version = "0.0.3"
 description = "Control plane for a computer-use stack: agent loop, operator console, screen fleet"
 requires-python = ">=3.12"
