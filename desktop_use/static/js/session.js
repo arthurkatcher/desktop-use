@@ -4,6 +4,26 @@ const $ = id => document.getElementById(id);
 const transcript = $('transcript');
 const sid = decodeURIComponent(location.pathname.split('/').pop());
 
+/* ── sticky-to-bottom transcript scroll ──────────────
+   IntersectionObserver on a 1px sentinel kept as the transcript's last
+   child. The IO signal IS the stickiness state — no scrollTop math, so a
+   tall card can never silently unstick the rail. While stuck, every
+   append (and any late-loading content) re-pins the bottom; scrolling up
+   more than the rootMargin grace unsticks, scrolling back down re-sticks. */
+let stickToBottom = true;
+const sentinel = document.createElement('div');
+sentinel.style.cssText = 'height:1px;flex:none;';
+transcript.appendChild(sentinel);
+transcript.style.overflowAnchor = 'none';   // our pin, not the browser's
+new IntersectionObserver(entries => {
+  stickToBottom = entries[0].isIntersecting;
+}, { root: transcript, rootMargin: '0px 0px 140px 0px' }).observe(sentinel);
+function pinBottom() {
+  if (stickToBottom) transcript.scrollTop = transcript.scrollHeight;
+}
+// late-growing content inside cards (images etc.) re-pins while stuck
+transcript.addEventListener('load', pinBottom, true);
+
 /* ── live VM ─────────────────────────────────────── */
 let rfb = null, vncUp = false;
 function connectVNC() {
@@ -215,9 +235,8 @@ function card(html, cls = '') {
   el.className = 'card ' + cls;
   el.innerHTML = html;
   transcript.appendChild(el);
-  const nearBottom = transcript.scrollHeight - transcript.scrollTop
-                     - transcript.clientHeight < 180;
-  if (nearBottom) transcript.scrollTop = transcript.scrollHeight;
+  transcript.appendChild(sentinel);   // sentinel stays the last child
+  pinBottom();
   return el;
 }
 const esc = s => String(s).replace(/[&<>"]/g,
@@ -588,6 +607,9 @@ function sendMsg() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
   });
+  // re-arm stickiness: the user just spoke, they want to follow the reply
+  stickToBottom = true;
+  transcript.scrollTop = transcript.scrollHeight;
 }
 $('msg-send').addEventListener('click', sendMsg);
 $('msg-input').addEventListener('keydown', e => {
