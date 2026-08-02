@@ -7,6 +7,10 @@
 [![Status](https://img.shields.io/badge/status-MVP-ffb454.svg)](#status)
 [![Version](https://img.shields.io/badge/version-0.0.1-63b981.svg)](CHANGELOG.md)
 
+![desktop-use — terminal task demo: the agent opens a terminal and writes and runs a Python one-liner while the console streams its reasoning](assets/terminal-demo.gif)
+
+*A session end to end: task in, the model reasons step by step on the left, and the live VNC feed shows it working the desktop on the right.*
+
 `desktop-use` is the **control plane** of a split computer-use stack. A vision-language model decides actions; this repo runs the model loop, the web operator console, and either a local nested desktop or a remote [desktop-sandbox](https://github.com/arthurkatcher/desktop-sandbox) data plane.
 
 Split-stack evolution of an earlier local-only prototype: same interrupt contract, same append-only sessions, dual model backends (Holo structured harness and generic OpenAI-compatible VLMs).
@@ -35,6 +39,12 @@ Split-stack evolution of an earlier local-only prototype: same interrupt contrac
                     │  holo  ·  generic      │
                     └────────────────────────┘
 ```
+
+## Showcase
+
+Browser lane — the agent opens the sandbox browser, searches DuckDuckGo and reads the answer out of the first result:
+
+![desktop-use — browser task demo](assets/browser-demo.gif)
 
 ## Table of contents
 
